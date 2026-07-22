@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datasetforge"
+version = "0.0.0"
+description = "DatasetForge is a toolkit for optimizing and preparing image datasets for AI training. It provides dataset analysis, cleaning, optimization and conversion tools, including image re-encoding and preprocessing workflows."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
+authors = [
+    {name = "JuanForge"}
+]
+
+dependencies = [
+]
+
+[project.urls]
+Homepage = "https://github.com/JuanForge/datasetforge"
+Repository = "https://github.com/JuanForge/datasetforge"
