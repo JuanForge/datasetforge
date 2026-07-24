@@ -14,7 +14,15 @@ authors = [
 ]
 
 dependencies = [
+    "Pillow",
+    "tqdm",
+    "setproctitle",
+    "ImageHash",
+    "orjson"
 ]
+
+[project.scripts]
+datasetforge = "datasetforge.main:main"
 
 [project.urls]
 Homepage = "https://github.com/JuanForge/datasetforge"
