@@ -8,6 +8,7 @@ import os
 import sys
 import warnings
 from pathlib import Path
+from typing import Generator
 
 import imagehash
 import orjson
@@ -122,6 +123,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
     # args.input: str
     # args.output: str
     # args.verbose: bool
+    # args.steam: bool
     try:
         top_k = int(args.top_k)
         if top_k <= 0:
@@ -141,45 +143,91 @@ def duplicates_command(args: argparse.Namespace) -> None:
                     numOffile += 1
         
         comparisons = []
-    
-        hashes: dict[str, ImageHash] = {}
         counter = itertools.count()
         
-        for file in tqdm(
-            (file for folder in input for file in Path(folder).rglob('*.json')),
-            total=numOffile,
-            desc="duplicates",
-            dynamic_ncols=True,
-            smoothing=0.05,
-            mininterval=0.5,
-            miniters=1
-            ):
-            data = jsonloadcache(open(file, "rb").read())
-        
-        
-            path = str(data["path"])
-            phash: ImageHash = imagehash.hex_to_hash(data["phash"])
-        
-            for old_path, old_phash in hashes.items():
-                distance = phash - old_phash
-        
-                item = {
-                    "path1": old_path,
-                    "path2": path,
-                    "distance": distance,
-                }
-        
-                entry = (-distance, next(counter), item)
-        
-                if len(comparisons) < top_k:
-                    heapq.heappush(comparisons, entry)
-        
-                elif distance < -comparisons[0][0]:
-                    heapq.heapreplace(comparisons, entry)
-        
-            hashes[path] = phash
-        
-        
+        if not args.stream:
+            hashes: dict[str, ImageHash] = {}
+            
+            for file in tqdm(
+                (file for folder in input for file in Path(folder).rglob('*.json')),
+                total=numOffile,
+                desc="duplicates",
+                dynamic_ncols=True,
+                smoothing=0.05,
+                mininterval=0.5,
+                miniters=1
+                ):
+                data = jsonloadcache(open(file, "rb").read())
+                
+                
+                path = str(data["path"])
+                phash: ImageHash = imagehash.hex_to_hash(data["phash"])
+                
+                for old_path, old_phash in hashes.items():
+                    distance = phash - old_phash
+                    
+                    item = {
+                        "path1": old_path,
+                        "path2": path,
+                        "distance": distance,
+                    }
+                    
+                    entry = (-distance, next(counter), item)
+                    
+                    if len(comparisons) < top_k:
+                        heapq.heappush(comparisons, entry)
+                    
+                    elif distance < -comparisons[0][0]:
+                        heapq.heapreplace(comparisons, entry)
+                
+                hashes[path] = phash
+        else:
+            
+            pbar = tqdm(
+                total=numOffile ** 2,
+                desc="duplicates",
+                dynamic_ncols=True,
+                smoothing=0.05,
+                mininterval=0.5,
+                miniters=1
+            )
+            
+            def file_stream() -> Generator[str, None, None]:
+                for folder in input:
+                    for file in Path(folder).rglob("*.json"):
+                        yield str(file)
+            
+            for file in file_stream():
+                data = jsonloadcache(open(file, "rb").read())
+                
+                path = str(data["path"])
+                phash = imagehash.hex_to_hash(data["phash"])
+                
+                for old_file in file_stream():
+                    pbar.update(1)
+                    if old_file == file:
+                        continue
+                    
+                    old_data = jsonloadcache(open(old_file, "rb").read())
+                    
+                    old_path = str(old_data["path"])
+                    old_phash = imagehash.hex_to_hash(old_data["phash"])
+                    
+                    distance = phash - old_phash
+                    
+                    item = {
+                        "path1": path,
+                        "path2": old_path,
+                        "distance": distance,
+                    }
+                    
+                    entry = (-distance, next(counter), item)
+                    
+                    if len(comparisons) < top_k:
+                        heapq.heappush(comparisons, entry)
+                    
+                    elif distance < -comparisons[0][0]:
+                        heapq.heapreplace(comparisons, entry)
         
         comparisons.sort(key=lambda x: x[2]["distance"])
         
@@ -189,16 +237,6 @@ def duplicates_command(args: argparse.Namespace) -> None:
             )
     except KeyboardInterrupt:
         pass
-
-
-        
-        #for key, value in top_k_list.copy().items():
-        #    top_k_list[str(data["path"])] = {
-        #        "phash": imagehash.hex_to_hash(data["phash"])
-        #    }
-            #if len(top_k_list) > top_k:
-            #    last = 0
-            #    for key, value in top_k_list.copy().items():
 
 
 
@@ -334,6 +372,10 @@ def main() -> None:
         "--top-k",
         type=int,
         default=5
+    )
+    duplicates_parser.add_argument(
+        "--stream",
+        action="store_true"
     )
     duplicates_parser.set_defaults(
         func=duplicates_command
