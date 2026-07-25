@@ -6,6 +6,8 @@ import json
 import math
 import os
 import sys
+import tempfile
+import time
 import warnings
 from pathlib import Path
 from typing import Generator
@@ -42,41 +44,36 @@ def export_command(args: argparse.Namespace) -> None:
     print("="*5 + "build_dataset end" + "="*5)
     return
 
-def index_command(args: argparse.Namespace) -> None:
-    # args.input: list[str]
-    # args.output: str
-    # args.threads: int - nos used
-    # args.verbose: bool
-    # agrs.phash_bits: int
-    hash_size: int = math.isqrt(args.phash_bits)
+def _index_command(input: list[str], output: str, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> None:
+    hash_size: int = math.isqrt(phash_bits)
     print(f"hash size : {hash_size}")
     
-    if hash_size * hash_size != args.phash_bits:
+    if hash_size * hash_size != phash_bits:
         raise ValueError(
             "--phash-bits must be a perfect square (64, 256, 1024, ...)"
     )
     
-    base = os.path.join(args.output, __version__, "__unit__")
+    base = os.path.join(output, __version__, "__unit__")
     os.makedirs(base, exist_ok=True)
     
-    with open(os.path.join(args.output, __version__, "META.json"), "w", encoding="utf-8") as meta:
+    with open(os.path.join(output, __version__, "META.json"), "w", encoding="utf-8") as meta:
         meta.write(json.dumps(
             {
                 "phash": {
-                    "bits": args.phash_bits
+                    "bits": phash_bits
                 }
             }
         ))
     try:
         numOffile = 0
-        print(f"syncro in {', '.join(args.input)}...")
-        for folder in args.input:
+        print(f"syncro in {', '.join(input)}...")
+        for folder in input:
             for _ in Path(folder).rglob(in_type):
                 if _.is_file():
                     numOffile += 1
         
         for file in tqdm(
-            (file for folder in args.input for file in Path(folder).rglob(in_type)),
+            (file for folder in input for file in Path(folder).rglob(in_type)),
             total=numOffile,
             desc="index",
             dynamic_ncols=True,
@@ -88,7 +85,7 @@ def index_command(args: argparse.Namespace) -> None:
             outJsonTemp = f"{outJson}.temp"
             if not os.path.isfile(outJson):
                 with open(file, "rb") as infile:
-                    if args.verbose:
+                    if verbose:
                         tqdm.write(f"[ in  ] : path : '{file}', output : '{outJson}'")
                     
                     data: bytes = infile.read()
@@ -105,6 +102,20 @@ def index_command(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         return
 
+def index_command(args: argparse.Namespace) -> None:
+    # args.input: list[str]
+    # args.output: str
+    # args.threads: int - nos used
+    # args.verbose: bool
+    # args.phash_bits: int
+    return _index_command(
+        input=args.input,
+        output=args.output,
+        threads=args.threads,
+        verbose=args.verbos,
+        phash_bits=args.phash_bits
+    )
+
 def jsonloadcache(x: bytes) -> dict[str, str | int]:
     data = orjson.loads(x)
     return {
@@ -114,28 +125,59 @@ def jsonloadcache(x: bytes) -> dict[str, str | int]:
         "size":    data["size"]
     }
 
-#def top_k_algo(entry: list[ImageHash], top: int) -> list[ImageHash]:
-#    pass
+def phash_live(phash_max_percent: float, phash_min_percent: float, percent: float|int) -> list[bool | float | int]:
+    if percent > 100 or percent < 0:
+        RuntimeError(f"panic, percent is {percent}")
+    
+    if percent <= phash_max_percent and percent >= phash_min_percent:
+        return [True, percent]
+    
+    return [False, 0]
 
 def duplicates_command(args: argparse.Namespace) -> None:
     # args.top_k: int
     # args.phash: bool
-    # args.input: str
+    # args.input: list[str]
+    # args.input_cache: str
     # args.output: str
     # args.verbose: bool
     # args.steam: bool
+    # args.phash_live: bool
+    # args.phash_max_percent: float - default == 0.0
+    # args.phash_min_percent: float - default == 0.0
+    # args.phash_bits: int
+    tmp = None
     try:
         top_k = int(args.top_k)
-        if top_k <= 0:
-            raise RuntimeError("invalide top-k value")
+        #if top_k <= 0:
+        #    raise RuntimeError("invalide top-k value")
         
-        with open(os.path.join(args.input, "META.json"), "r", encoding="utf-8") as meta:
+        if args.input and args.input_cache:
+            raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
+        
+        if args.phash_max_percent == 0.0 and args.phash_live:
+            raise RuntimeError("--phash-live defined without --phash-max-percent")
+        
+        if (not args.phash_live) and args.phash_max_percent != 0.0:
+            raise RuntimeError("--phash-max-percent defined without --phash-live")
+        
+        
+        if args.input:
+            print("Build the index files...")
+            tmp = tempfile.TemporaryDirectory()
+            _index_command(input=args.input, output=tmp.name, phash_bits=args.phash_bits)
+            _input = os.path.join(tmp.name, __version__)
+        else:
+            _input = args.input
+        
+        
+        with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
             phash_bits = json.loads(meta.read())["phash"]["bits"]
         
-        args.input = os.path.join(args.input, "__unit__")
+        _input = os.path.join(_input, "__unit__")
         
         numOffile = 0
-        input: list[str] = [args.input]
+        input: list[str] = [_input]
         print(f"syncro in {', '.join(input)}...")
         for folder in input:
             for _ in Path(folder).rglob('*.json'):
@@ -146,6 +188,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
         counter = itertools.count()
         
         if not args.stream:
+            
             hashes: dict[str, ImageHash] = {}
             
             for file in tqdm(
@@ -166,6 +209,11 @@ def duplicates_command(args: argparse.Namespace) -> None:
                 for old_path, old_phash in hashes.items():
                     distance = phash - old_phash
                     
+                    if args.phash_live:
+                        temp = phash_live(float(args.phash_max_percent), float(args.phash_min_percent), percent = distance/phash_bits * 100)
+                        if temp[0]:
+                            tqdm.write(f"phash-live : {path} - {old_path} : {temp[1]}% diff")
+                    
                     item = {
                         "path1": old_path,
                         "path2": path,
@@ -174,12 +222,12 @@ def duplicates_command(args: argparse.Namespace) -> None:
                     
                     entry = (-distance, next(counter), item)
                     
-                    if len(comparisons) < top_k:
-                        heapq.heappush(comparisons, entry)
-                    
-                    elif distance < -comparisons[0][0]:
-                        heapq.heapreplace(comparisons, entry)
-                
+                    if top_k > 0:
+                        if len(comparisons) < top_k:
+                            heapq.heappush(comparisons, entry)
+                        
+                        elif distance < -comparisons[0][0]:
+                            heapq.heapreplace(comparisons, entry)
                 hashes[path] = phash
         else:
             
@@ -215,6 +263,11 @@ def duplicates_command(args: argparse.Namespace) -> None:
                     
                     distance = phash - old_phash
                     
+                    if args.phash_live:
+                        temp = phash_live(float(args.phash_max_percent), float(args.phash_min_percent), percent = distance/phash_bits * 100)
+                        if temp[0]:
+                            tqdm.write(f"phash-live : {path} - {old_path} : {temp[1]}% diff")
+                    
                     item = {
                         "path1": path,
                         "path2": old_path,
@@ -223,20 +276,23 @@ def duplicates_command(args: argparse.Namespace) -> None:
                     
                     entry = (-distance, next(counter), item)
                     
-                    if len(comparisons) < top_k:
-                        heapq.heappush(comparisons, entry)
-                    
-                    elif distance < -comparisons[0][0]:
-                        heapq.heapreplace(comparisons, entry)
+                    if top_k > 0:
+                        if len(comparisons) < top_k:
+                            heapq.heappush(comparisons, entry)
+                        
+                        elif distance < -comparisons[0][0]:
+                            heapq.heapreplace(comparisons, entry)
         
         comparisons.sort(key=lambda x: x[2]["distance"])
         
         for _, _, item in comparisons:
             print(
-                f"{item['path1']} - {item['path2']} : {item['distance']/phash_bits * 100}% diff"
+                f"k-top : {item['path1']} - {item['path2']} : {item['distance']/phash_bits * 100}% diff"
             )
     except KeyboardInterrupt:
         pass
+    finally:
+        del tmp
 
 
 
@@ -257,6 +313,8 @@ def main() -> None:
         Please monitor your system resources carefully while using this feature. \033[0m
         """
     )
+    
+    _help_phash_bits = "Set the pHash bit size. Higher values increase precision and reduce collisions, which is useful for large datasets."
     
     parser = argparse.ArgumentParser(
         prog="datasetforge",
@@ -343,7 +401,7 @@ def main() -> None:
     )
     index_parser.add_argument(
         "--phash-bits",
-        help="Set the pHash bit size. Higher values increase precision and reduce collisions, which is useful for large datasets.",
+        help=_help_phash_bits,
         type=int,
         default=64
     )
@@ -360,7 +418,12 @@ def main() -> None:
     )
     duplicates_parser.add_argument(
         "--input",
+        nargs="+",
         required=True,
+        help="Folders of the datasets."
+    )
+    duplicates_parser.add_argument(
+        "--input-cache",
         help="Folder of the cached json.",
         type=str
     )
@@ -369,14 +432,52 @@ def main() -> None:
         action="store_true"
     )
     duplicates_parser.add_argument(
+        "--phash-bits",
+        help="Requires `--input` to operate; `--input-cache` uses the same one specified during its creation. " + _help_phash_bits,
+        type=int,
+        default=64
+    )
+    duplicates_parser.add_argument(
+        "--phash-live",
+        action="store_true",
+        help=(
+            "Display all pHash matches matching --phash-max-percent instead of "
+            "limiting results to top-k. Requires --phash-max-percent."
+        )
+    )
+    duplicates_parser.add_argument(
+        "--phash-max-percent",
+        type=float,
+        default=0.0,
+        help=(
+            "Maximum pHash difference percentage to display. Must be used together "
+            "with --phash-live. Displays every file pair with a pHash difference "
+            "less than or equal to the specified percentage."
+        )
+    )
+    duplicates_parser.add_argument(
+        "--phash-min-percent",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum pHash difference percentage to display. Must be used together "
+            "with --phash-live. Displays every file pair with a pHash difference "
+            "greater than or equal to the specified percentage."
+        )
+    )
+    duplicates_parser.add_argument(
         "--top-k",
         type=int,
-        default=5
+        default=0
     )
     duplicates_parser.add_argument(
         "--stream",
         action="store_true"
     )
+    #duplicates_parser.add_argument(
+    #    "--auto-index",
+    #    action="store_true"
+    #)
     duplicates_parser.set_defaults(
         func=duplicates_command
     )
