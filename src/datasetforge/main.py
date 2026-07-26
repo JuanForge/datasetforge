@@ -5,7 +5,6 @@ import itertools
 import json
 import math
 import os
-import secrets
 import sys
 import tempfile
 import warnings
@@ -22,7 +21,17 @@ from datasetforge.lib.build_dataset import main as lib_build_dataset_main
 from datasetforge.lib.inject_console import PrefixWriter
 from datasetforge.lib.phash import get as phash_value
 
-in_type = "*.jpg"
+in_type: list[str] = [
+    "*.jpg",
+    "*.jpeg",
+    "*.png"
+]
+
+def sourceGen(path: list[str]) -> Generator[Path, None, None]:
+    for folder in path:
+        for _ext in in_type:
+            for _file in Path(folder).rglob(_ext):
+                yield _file
 
 def export_command(args: argparse.Namespace) -> None:
     # args.input: list[str]
@@ -68,15 +77,14 @@ def _index_command(input: list[str], output: str, threads: int = 0, verbose: boo
     numOffile = 0
     
     print(f"syncro in {', '.join(input)}...")
-    for folder in input:
-        for _ in Path(folder).rglob(in_type):
+    for _ in sourceGen(input):
             if _.is_file():
                 numOffile += 1
     
     counterFiles = itertools.count()
     
     for file in tqdm(
-        (file for folder in input for file in Path(folder).rglob(in_type)),
+        sourceGen(input),
         total=numOffile,
         desc="index",
         dynamic_ncols=True,
