@@ -18,7 +18,8 @@ dependencies = [
     "tqdm",
     "setproctitle",
     "ImageHash",
-    "orjson"
+    "orjson",
+    "psutil"
 ]
 
 [project.scripts]

@@ -7,12 +7,14 @@ import math
 import os
 import sys
 import tempfile
+import time
 import warnings
 from pathlib import Path
 from typing import Generator
 
 import imagehash
 import orjson
+import psutil
 from imagehash import ImageHash
 from tqdm import tqdm
 
@@ -26,6 +28,19 @@ in_type: list[str] = [
     "*.jpeg",
     "*.png"
 ]
+
+process = psutil.Process(os.getpid())
+
+_getMemoryAlloc_time: float = time.monotonic()
+_getMemoryAlloc_log: str = ""
+def _getMemoryAlloc(interval: int | float = 0) -> str:
+    global _getMemoryAlloc_time, _getMemoryAlloc_log
+    if time.monotonic() - _getMemoryAlloc_time > interval:  # noqa: F823
+        _getMemoryAlloc_log = f"{process.memory_info().rss / (1024 * 1024):.4f} MiB"
+        _getMemoryAlloc_time = time.monotonic()
+    
+    return _getMemoryAlloc_log
+
 
 def sourceGen(path: list[str]) -> Generator[Path, None, None]:
     for folder in path:
@@ -164,7 +179,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
         #if top_k <= 0:
         #    raise RuntimeError("invalide top-k value")
         
-        if args.input and args.input_cache:
+        if bool(args.input) == bool(args.input_cache):
             raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
         
         if args.phash_max_percent == 0.0 and args.phash_live:
@@ -180,7 +195,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
             _index_command(input=args.input, output=tmp.name, phash_bits=args.phash_bits)
             _input = os.path.join(tmp.name, __version__)
         else:
-            _input = args.input
+            _input = args.input_cache
         
         
         with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
@@ -203,7 +218,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
             
             hashes: dict[str, ImageHash] = {}
             
-            for file in tqdm(
+            pbar = tqdm(
                 (file for folder in input for file in Path(folder).rglob('*.json')),
                 total=numOffile,
                 desc="duplicates",
@@ -211,7 +226,9 @@ def duplicates_command(args: argparse.Namespace) -> None:
                 smoothing=0.05,
                 mininterval=0.5,
                 miniters=1
-                ):
+            )
+            
+            for file in pbar:
                 data = jsonloadcache(open(file, "rb").read())
                 
                 
@@ -219,6 +236,11 @@ def duplicates_command(args: argparse.Namespace) -> None:
                 phash: ImageHash = imagehash.hex_to_hash(data["phash"])
                 
                 for old_path, old_phash in hashes.items():
+                    
+                    _counter: int = next(counter)
+                    if _counter % 100 == 0:
+                        pbar.set_postfix(ram=_getMemoryAlloc(interval=2))
+                    
                     distance = phash - old_phash
                     
                     if args.phash_live:
@@ -232,7 +254,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
                         "distance": distance,
                     }
                     
-                    entry = (-distance, next(counter), item)
+                    entry = (-distance, _counter, item)
                     
                     if top_k > 0:
                         if len(comparisons) < top_k:
@@ -431,7 +453,6 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--input",
         nargs="+",
-        required=True,
         help="Folders of the datasets."
     )
     duplicates_parser.add_argument(
