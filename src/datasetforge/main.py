@@ -5,9 +5,9 @@ import itertools
 import json
 import math
 import os
+import secrets
 import sys
 import tempfile
-import time
 import warnings
 from pathlib import Path
 from typing import Generator
@@ -64,43 +64,44 @@ def _index_command(input: list[str], output: str, threads: int = 0, verbose: boo
                 }
             }
         ))
-    try:
-        numOffile = 0
-        print(f"syncro in {', '.join(input)}...")
-        for folder in input:
-            for _ in Path(folder).rglob(in_type):
-                if _.is_file():
-                    numOffile += 1
-        
-        for file in tqdm(
-            (file for folder in input for file in Path(folder).rglob(in_type)),
-            total=numOffile,
-            desc="index",
-            dynamic_ncols=True,
-            smoothing=0.05,
-            mininterval=0.5,
-            miniters=1
-            ):
-            outJson = f"{os.path.join(base, file.stem)}.json"
-            outJsonTemp = f"{outJson}.temp"
-            if not os.path.isfile(outJson):
-                with open(file, "rb") as infile:
-                    if verbose:
-                        tqdm.write(f"[ in  ] : path : '{file}', output : '{outJson}'")
-                    
-                    data: bytes = infile.read()
-                    
-                    open(outJsonTemp, "wb").write(orjson.dumps(
-                        {
-                            "phash": str(phash_value(data, hash_size=hash_size)),
-                            "sha256": hashlib.sha256(data).hexdigest(),
-                            "size": len(data),
-                            "path": str(Path(file).resolve())
-                        }
-                    ))
-                    os.replace(outJsonTemp, outJson)
-    except KeyboardInterrupt:
-        return
+    
+    numOffile = 0
+    
+    print(f"syncro in {', '.join(input)}...")
+    for folder in input:
+        for _ in Path(folder).rglob(in_type):
+            if _.is_file():
+                numOffile += 1
+    
+    counterFiles = itertools.count()
+    
+    for file in tqdm(
+        (file for folder in input for file in Path(folder).rglob(in_type)),
+        total=numOffile,
+        desc="index",
+        dynamic_ncols=True,
+        smoothing=0.05,
+        mininterval=0.5,
+        miniters=1
+        ):
+        outJson = f"{os.path.join(base, str(next(counterFiles)))}.json"
+        outJsonTemp = f"{outJson}.temp"
+        if not os.path.isfile(outJson):
+            with open(file, "rb") as infile:
+                if verbose:
+                    tqdm.write(f"[ in  ] : path : '{file}', output : '{outJson}'")
+                
+                data: bytes = infile.read()
+                
+                open(outJsonTemp, "wb").write(orjson.dumps(
+                    {
+                        "phash": str(phash_value(data, hash_size=hash_size)),
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size": len(data),
+                        "path": str(Path(file).resolve())
+                    }
+                ))
+                os.replace(outJsonTemp, outJson)
 
 def index_command(args: argparse.Namespace) -> None:
     # args.input: list[str]
@@ -108,13 +109,16 @@ def index_command(args: argparse.Namespace) -> None:
     # args.threads: int - nos used
     # args.verbose: bool
     # args.phash_bits: int
-    return _index_command(
-        input=args.input,
-        output=args.output,
-        threads=args.threads,
-        verbose=args.verbos,
-        phash_bits=args.phash_bits
-    )
+    try:
+        return _index_command(
+            input=args.input,
+            output=args.output,
+            threads=args.threads,
+            verbose=args.verbos,
+            phash_bits=args.phash_bits
+        )
+    except KeyboardInterrupt:
+        return
 
 def jsonloadcache(x: bytes) -> dict[str, str | int]:
     data = orjson.loads(x)
