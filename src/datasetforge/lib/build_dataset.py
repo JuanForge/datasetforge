@@ -13,26 +13,24 @@ from typing import Any
 from setproctitle import setproctitle
 from tqdm import tqdm
 
-from datasetforge.lib import png
-from datasetforge.lib.ext import ext
+from datasetforge.lib import format as formatLib
 from datasetforge.lib.source import sourceGen
 
 
-def unit(queue_in: QueueType[dict[str, bytes]], queue_out: QueueType[dict[str, bytes | Any]], mode: int) -> None:
+# pyrefly: ignore [explicit-any]
+def unit(queue_in: QueueType[dict[str, bytes]], queue_out: QueueType[dict[str, bytes | Any]], format: str|None) -> None:
     """
     pass2png_watermark = 0,
     copy = 1
     """
     entry = {}
     try:
-        def default(x: bytes) -> bytes: return x
+        def default(x: bytes, format: str) -> bytes: return x
         
-        if mode == 0:
-            algo = png.encode
-        elif mode == 1:
+        if format is None:
             algo = default
         else:
-            raise RuntimeError("invalide mode")
+            algo = formatLib.encode
         
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         setproctitle("build_datasets-worker")
@@ -45,7 +43,7 @@ def unit(queue_in: QueueType[dict[str, bytes]], queue_out: QueueType[dict[str, b
             queue_out.put(
                 {
                     "path": entry["path"],
-                    "bytes": algo(entry["bytes"])
+                    "bytes": algo(entry["bytes"], format=str(format))
                 }
             )
     except Exception as e:
@@ -64,6 +62,7 @@ def unit(queue_in: QueueType[dict[str, bytes]], queue_out: QueueType[dict[str, b
         return
 
 
+# pyrefly: ignore [explicit-any]
 def write_queue(queue_out: QueueType[dict[str, bytes | Any]], printlog: bool) -> None:
     while True:
         try:
@@ -92,12 +91,12 @@ class RenameMode(StrEnum):
     SHA256 = "sha256"
 
 def main(
-        mode: int,
         out: str,
         verbose: bool,
         folders: list[str],
         recursive: bool,
         rename: RenameMode,
+        format: str|None = None,
         threads: int = 0,
     ) -> None:
     
@@ -127,7 +126,7 @@ def main(
     for _ in range(threads):
         p = Process(
             target=unit,
-            args=(queue_in, queue_out, mode)
+            args=(queue_in, queue_out, format)
         )
         p.start()
         workers.append(p)
@@ -157,7 +156,12 @@ def main(
             else:
                 raise RuntimeError(f"invalide rename : {rename}")
             
-            outfile: str = f"{os.path.join(out, outfileName)}.{ext(mode, file)}"
+            if format is None:
+                _format: str = file.suffix.replace(".", "")
+            else:
+                _format = format
+            
+            outfile: str = f"{os.path.join(out, outfileName)}.{_format}"
             
             if not os.path.isfile(f"{outfile}"):
                 if type(_cachedFile) is not bytes:

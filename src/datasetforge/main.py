@@ -40,12 +40,13 @@ def _getMemoryAlloc(interval: int | float = 0) -> str:
 def export_command(args: argparse.Namespace) -> None:
     # args.input: list[str]
     # args.output: str
-    # args.pass2png: bool -> int
     # args.threads: int
     # args.verbose: bool
     # args.no_recursive
     # args.rename: bool
     # args.rename_sha256: bool
+    # args.output_format: str | None
+    
     if args.rename and args.rename_sha256:
         raise RuntimeError("Cannot use --rename together with --rename-sha256.")
     
@@ -60,11 +61,11 @@ def export_command(args: argparse.Namespace) -> None:
     original_stdout = sys.stdout
     sys.stdout = PrefixWriter(sys.stdout, "[lib:build_dataset:main] ")
     lib_build_dataset_main(
-        mode=int(not args.pass2png),
         out=str(args.output),
         verbose=bool(args.verbose),
         recursive=not args.no_recursive,
         rename=rename,
+        format=args.output_format,
         threads=int(args.threads),
         folders=list(args.input)
     )
@@ -422,11 +423,11 @@ def main() -> None:
         help="Foler ouput.",
         required=True
     )
-    export_parser.add_argument(
-        "--pass2png",
-        help="convert input format to png",
-        action="store_true"
-    )
+    #export_parser.add_argument(
+    #    "--pass2png",
+    #    help="convert input format to png",
+    #    action="store_true"
+    #)
     export_parser.add_argument(
         "--verbose",
         help="",
@@ -452,6 +453,10 @@ def main() -> None:
         "--rename-sha256",
         action="store_true",
         help="Rename exported files using their SHA-256 hash instead of preserving the original source filenames."
+    )
+    export_parser.add_argument(
+        "--output-format",
+        help="Specify the output format (jpg, jpeg, png...)."
     )
     export_parser.set_defaults(
         func=export_command
