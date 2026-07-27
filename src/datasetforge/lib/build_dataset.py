@@ -1,8 +1,10 @@
+import hashlib
 import itertools
 import os
 import signal
 import time
 import traceback
+from enum import StrEnum
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
 from queue import Empty as queue_Empty
@@ -84,7 +86,10 @@ def write_queue(queue_out: QueueType[dict[str, bytes | Any]], printlog: bool) ->
             break
 
 
-
+class RenameMode(StrEnum):
+    DEFAULT = "default"
+    COUNT = "count"
+    SHA256 = "sha256"
 
 def main(
         mode: int,
@@ -92,7 +97,7 @@ def main(
         verbose: bool,
         folders: list[str],
         recursive: bool,
-        rename: bool,
+        rename: RenameMode,
         threads: int = 0,
     ) -> None:
     
@@ -137,18 +142,31 @@ def main(
             mininterval=0.5,
             miniters=1
         ):
-            if rename:
+            _cachedFile: bytes|bool = False
+            
+            if rename is RenameMode.COUNT:
                 outfileName: str = str(next(GenName))
-            else:
+            
+            elif rename is RenameMode.DEFAULT:
                 outfileName: str = file.stem
+            
+            elif rename is RenameMode.SHA256:
+                _cachedFile = open(file, "rb").read()
+                outfileName = hashlib.sha256(_cachedFile).hexdigest()
+            
+            else:
+                raise RuntimeError(f"invalide rename : {rename}")
             
             outfile: str = f"{os.path.join(out, outfileName)}.{ext(mode, file)}"
             
             if not os.path.isfile(f"{outfile}"):
-                with open(file, "rb") as infile:
-                    if verbose:
-                        tqdm.write(f"[ in  ] : path : '{file}', output : '{outfile}'")
-                    queue_in.put({"path": f"{outfile}", "bytes": infile.read()})
+                if type(_cachedFile) is not bytes:
+                    with open(file, "rb") as infile:
+                        _cachedFile = infile.read()
+                
+                if verbose:
+                    tqdm.write(f"[ in  ] : path : '{file}', output : '{outfile}'")
+                queue_in.put({"path": f"{outfile}", "bytes": _cachedFile})
             else:
                 tqdm.write(f"double surname : '{file}'")
             

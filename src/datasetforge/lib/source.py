@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Generator
 
@@ -16,4 +17,5 @@ def sourceGen(path: list[str], recursive: bool) -> Generator[Path, None, None]:
     for folder in path:
         for _ext in in_type:
             for _file in getattr(Path(folder), func)(_ext):
-                yield _file
+                if os.path.isfile(_file):
+                    yield _file

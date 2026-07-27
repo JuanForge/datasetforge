@@ -19,6 +19,7 @@ from imagehash import ImageHash
 from tqdm import tqdm
 
 from datasetforge import __version__
+from datasetforge.lib.build_dataset import RenameMode
 from datasetforge.lib.build_dataset import main as lib_build_dataset_main
 from datasetforge.lib.inject_console import PrefixWriter
 from datasetforge.lib.phash import get as phash_value
@@ -44,6 +45,17 @@ def export_command(args: argparse.Namespace) -> None:
     # args.verbose: bool
     # args.no_recursive
     # args.rename: bool
+    # args.rename_sha256: bool
+    if args.rename and args.rename_sha256:
+        raise RuntimeError("Cannot use --rename together with --rename-sha256.")
+    
+    if args.rename:
+        rename = RenameMode.COUNT
+    elif args.rename_sha256:
+        rename = RenameMode.SHA256
+    else:
+        rename = RenameMode.DEFAULT
+    
     print("="*5 + "build_dataset start" + "="*5)
     original_stdout = sys.stdout
     sys.stdout = PrefixWriter(sys.stdout, "[lib:build_dataset:main] ")
@@ -52,7 +64,7 @@ def export_command(args: argparse.Namespace) -> None:
         out=str(args.output),
         verbose=bool(args.verbose),
         recursive=not args.no_recursive,
-        rename=args.rename,
+        rename=rename,
         threads=int(args.threads),
         folders=list(args.input)
     )
@@ -435,6 +447,11 @@ def main() -> None:
         "--rename",
         action="store_true",
         help="Rename exported files using unique filenames instead of preserving the original source filenames."
+    )
+    export_parser.add_argument(
+        "--rename-sha256",
+        action="store_true",
+        help="Rename exported files using their SHA-256 hash instead of preserving the original source filenames."
     )
     export_parser.set_defaults(
         func=export_command
