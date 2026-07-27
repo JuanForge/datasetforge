@@ -22,31 +22,19 @@ from datasetforge import __version__
 from datasetforge.lib.build_dataset import main as lib_build_dataset_main
 from datasetforge.lib.inject_console import PrefixWriter
 from datasetforge.lib.phash import get as phash_value
-
-in_type: list[str] = [
-    "*.jpg",
-    "*.jpeg",
-    "*.png"
-]
+from datasetforge.lib.source import sourceGen
 
 process = psutil.Process(os.getpid())
 
-_getMemoryAlloc_time: float = time.monotonic()
+_getMemoryAlloc_time: float = 0.0
 _getMemoryAlloc_log: str = ""
 def _getMemoryAlloc(interval: int | float = 0) -> str:
     global _getMemoryAlloc_time, _getMemoryAlloc_log
-    if time.monotonic() - _getMemoryAlloc_time > interval:  # noqa: F823
+    if time.monotonic() - _getMemoryAlloc_time > interval:
         _getMemoryAlloc_log = f"{process.memory_info().rss / (1024 * 1024):.4f} MiB"
         _getMemoryAlloc_time = time.monotonic()
     
     return _getMemoryAlloc_log
-
-
-def sourceGen(path: list[str]) -> Generator[Path, None, None]:
-    for folder in path:
-        for _ext in in_type:
-            for _file in Path(folder).rglob(_ext):
-                yield _file
 
 def export_command(args: argparse.Namespace) -> None:
     # args.input: list[str]
@@ -54,6 +42,8 @@ def export_command(args: argparse.Namespace) -> None:
     # args.pass2png: bool -> int
     # args.threads: int
     # args.verbose: bool
+    # args.no_recursive
+    # args.rename: bool
     print("="*5 + "build_dataset start" + "="*5)
     original_stdout = sys.stdout
     sys.stdout = PrefixWriter(sys.stdout, "[lib:build_dataset:main] ")
@@ -61,14 +51,17 @@ def export_command(args: argparse.Namespace) -> None:
         mode=int(not args.pass2png),
         out=str(args.output),
         verbose=bool(args.verbose),
+        recursive=not args.no_recursive,
+        rename=args.rename,
         threads=int(args.threads),
         folders=list(args.input)
-        )
+    )
     sys.stdout = original_stdout
     print("="*5 + "build_dataset end" + "="*5)
+    print("!! You may leave. !!")
     return
 
-def _index_command(input: list[str], output: str, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> None:
+def _index(input: list[str], output: str, recursive: bool, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> None:
     hash_size: int = math.isqrt(phash_bits)
     print(f"hash size : {hash_size}")
     
@@ -92,14 +85,14 @@ def _index_command(input: list[str], output: str, threads: int = 0, verbose: boo
     numOffile = 0
     
     print(f"syncro in {', '.join(input)}...")
-    for _ in sourceGen(input):
+    for _ in sourceGen(input, recursive=recursive):
             if _.is_file():
                 numOffile += 1
     
     counterFiles = itertools.count()
     
     for file in tqdm(
-        sourceGen(input),
+        sourceGen(input, recursive=recursive),
         total=numOffile,
         desc="index",
         dynamic_ncols=True,
@@ -132,10 +125,12 @@ def index_command(args: argparse.Namespace) -> None:
     # args.threads: int - nos used
     # args.verbose: bool
     # args.phash_bits: int
+    # args.no_recursive: bool
     try:
-        return _index_command(
+        return _index(
             input=args.input,
             output=args.output,
+            recursive=not args.no_recursive,
             threads=args.threads,
             verbose=args.verbos,
             phash_bits=args.phash_bits
@@ -173,6 +168,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
     # args.phash_max_percent: float - default == 0.0
     # args.phash_min_percent: float - default == 0.0
     # args.phash_bits: int
+    # args.no_recursive: bool
     tmp = None
     try:
         top_k = int(args.top_k)
@@ -188,15 +184,24 @@ def duplicates_command(args: argparse.Namespace) -> None:
         if (not args.phash_live) and args.phash_max_percent != 0.0:
             raise RuntimeError("--phash-max-percent defined without --phash-live")
         
+        if args.no_recursive and (not args.input):
+            raise RuntimeError("--no--recursive requires --input")
+        
         
         if args.input:
             print("Build the index files...")
             tmp = tempfile.TemporaryDirectory()
-            _index_command(input=args.input, output=tmp.name, phash_bits=args.phash_bits)
+            _index(
+                input=args.input,
+                output=tmp.name,
+                recursive=not args.no_recursive,
+                phash_bits=args.phash_bits
+            )
             _input = os.path.join(tmp.name, __version__)
         else:
             _input = args.input_cache
         
+        start_time = time.monotonic()
         
         with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
             phash_bits = json.loads(meta.read())["phash"]["bits"]
@@ -239,7 +244,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
                     
                     _counter: int = next(counter)
                     if _counter % 100 == 0:
-                        pbar.set_postfix(ram=_getMemoryAlloc(interval=2))
+                        pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2))
                     
                     distance = phash - old_phash
                     
@@ -316,13 +321,33 @@ def duplicates_command(args: argparse.Namespace) -> None:
                         
                         elif distance < -comparisons[0][0]:
                             heapq.heapreplace(comparisons, entry)
-        
+        pbar.close()
+        total_time = time.monotonic() - start_time
         comparisons.sort(key=lambda x: x[2]["distance"])
-        
+        Num0 = 0
+        Num25 = 0
+        Num50 = 0
+        Num75 = 0
         for _, _, item in comparisons:
+            percent = item['distance']/phash_bits * 100
+            if percent <= 0:
+                Num0 += 1
+            elif percent <= 25:
+                Num25 += 1
+            elif percent <= 50:
+                Num50 += 1
+            elif percent <= 75:
+                Num75 += 1
             print(
-                f"k-top : {item['path1']} - {item['path2']} : {item['distance']/phash_bits * 100}% diff"
+                f"k-top : {item['path1']} - {item['path2']} : {percent}% diff"
             )
+        print("="*5 + " Summary " + "="*5)
+        print(f"  0% : {Num0}")
+        print(f"  25% : {Num25}")
+        print(f"  50% : {Num50}")
+        print(f"  75% : {Num75}")
+        print(f"total time (no index) : {total_time}")
+        print("="*19)
     except KeyboardInterrupt:
         pass
     finally:
@@ -349,6 +374,7 @@ def main() -> None:
     )
     
     _help_phash_bits = "Set the pHash bit size. Higher values increase precision and reduce collisions, which is useful for large datasets."
+    _help_no_recursive = "Do not scan subdirectories recursively"
     
     parser = argparse.ArgumentParser(
         prog="datasetforge",
@@ -400,7 +426,16 @@ def main() -> None:
         type=int,
         default=0
     )
-    
+    export_parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help=_help_no_recursive
+    )
+    export_parser.add_argument(
+        "--rename",
+        action="store_true",
+        help="Rename exported files using unique filenames instead of preserving the original source filenames."
+    )
     export_parser.set_defaults(
         func=export_command
     )
@@ -421,6 +456,11 @@ def main() -> None:
         "--output",
         help="Foler ouput for cache json file.",
         required=True
+    )
+    index_parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help=_help_no_recursive
     )
     index_parser.add_argument(
         "--verbose",
@@ -460,10 +500,10 @@ def main() -> None:
         help="Folder of the cached json.",
         type=str
     )
-    duplicates_parser.add_argument(
-        "--phash",
-        action="store_true"
-    )
+    #duplicates_parser.add_argument(
+    #    "--phash",
+    #    action="store_true"
+    #)
     duplicates_parser.add_argument(
         "--phash-bits",
         help="Requires `--input` to operate; `--input-cache` uses the same one specified during its creation. " + _help_phash_bits,
@@ -505,7 +545,13 @@ def main() -> None:
     )
     duplicates_parser.add_argument(
         "--stream",
-        action="store_true"
+        action="store_true",
+        help="Allows for O(k) memory usage at the cost of n(n - 1) comparisons; used on massive datasets."
+    )
+    duplicates_parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Requires `--input` to operate; " + _help_no_recursive
     )
     #duplicates_parser.add_argument(
     #    "--auto-index",

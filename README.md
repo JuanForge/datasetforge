@@ -69,12 +69,39 @@ For general duplicate detection, it is recommended to keep `--phash-min-percent`
 | Default | $\frac{n(n-1)}{2}$  | O(n)       | O(n + k)     |
 | `--stream` |  $n(n-1)$  | O(n²)      | O(k)         |
 
- 
 `--stream` is useful for very large datasets where memory is limited, but it can be significantly slower because files must be read multiple times.
 
+# pHash Explained Simply
+The similarity percentage reported by the tool should be interpreted with care. Perceptual hashing (pHash) does not compare images the way a human does, especially when using different hash sizes.
 
+In practice, using a larger value for `--phash-bits` (for example, `262144`) allows the algorithm to preserve significantly more visual information. As a result, pHash can perform a much finer comparison, often producing substantially higher similarity scores than smaller hash sizes such as `1024` or `4096`.
 
+Conversely, a smaller `--phash-bits` value effectively reduces the amount of visual information available to the algorithm. With fewer features to compare, similarity scores may be noticeably lower.
 
+Therefore, it is completely normal for the same pair of images to receive much higher similarity percentages—sometimes nearly twice as high in the top-*k* results—when using a larger `--phash-bits` value. This does not necessarily mean the images have become more similar; rather, the higher-resolution perceptual hash enables a more precise comparison.
+
+# Command-Line Arguments
+## `--phash-bits`
+
+Controls the resolution of the perceptual hash used during comparison.
+
+- **Default:** `4096`
+- **Higher values** preserve more visual information, allowing finer comparisons.
+- **Lower values** are faster and use less memory but may miss subtle similarities.
+
+Examples:
+
+```bash
+datasetforge duplicates --phash-bits 4096
+datasetforge duplicates --phash-bits 262144
+```
+
+> **Note**
+> Higher values often produce higher similarity percentages because the algorithm has more information available for comparison. This does **not** mean the images themselves are more similar.
+
+## `--input` ( duplicates )
+
+Specifies one or more dataset directories. Indexes are generated automatically, making this suitable for small datasets where pre-indexing is unnecessary.
 
 # WARNING
 > [!WARNING]

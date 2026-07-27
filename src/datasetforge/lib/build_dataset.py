@@ -1,20 +1,19 @@
+import itertools
 import os
 import signal
 import time
 import traceback
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
-from pathlib import Path
 from queue import Empty as queue_Empty
 from typing import Any
 
 from setproctitle import setproctitle
-
-
 from tqdm import tqdm
 
 from datasetforge.lib import png
 from datasetforge.lib.ext import ext
+from datasetforge.lib.source import sourceGen
 
 
 def unit(queue_in: QueueType[dict[str, bytes]], queue_out: QueueType[dict[str, bytes | Any]], mode: int) -> None:
@@ -70,6 +69,7 @@ def write_queue(queue_out: QueueType[dict[str, bytes | Any]], printlog: bool) ->
             if not entry.get("error_bool"):
                 if printlog:
                     tqdm.write(f"[ out ] : path : '{entry["path"]}'")
+                
                 with open(entry["path"], "wb") as fileout:
                     fileout.write(entry["bytes"])
             else:
@@ -91,9 +91,15 @@ def main(
         out: str,
         verbose: bool,
         folders: list[str],
-        in_type: str = "*.jpg",
-        threads: int = os.cpu_count() or 1
+        recursive: bool,
+        rename: bool,
+        threads: int = 0,
     ) -> None:
+    
+    if threads == 0:
+        threads = os.cpu_count() or 1
+    
+    GenName = itertools.count()
     
     setproctitle("build_datasets-main")
     
@@ -108,11 +114,10 @@ def main(
     
     numOffile = 0
     print(f"syncro in {', '.join(folders)}...")
-    for folder in folders:
-        for _ in Path(folder).rglob(in_type):
-            if _.is_file():
-                numOffile += 1
     
+    for _ in sourceGen(folders, recursive=recursive):
+        if _.is_file():
+            numOffile += 1
     
     for _ in range(threads):
         p = Process(
@@ -124,7 +129,7 @@ def main(
     
     try:
         for file in tqdm(
-            (file for folder in folders for file in Path(folder).rglob(in_type)),
+            sourceGen(folders, recursive=recursive),
             total=numOffile,
             desc="build",
             dynamic_ncols=True,
@@ -132,11 +137,20 @@ def main(
             mininterval=0.5,
             miniters=1
         ):
-            if not os.path.isfile(f"{os.path.join(out, file.stem)}.{ext(mode, file)}"):
+            if rename:
+                outfileName: str = str(next(GenName))
+            else:
+                outfileName: str = file.stem
+            
+            outfile: str = f"{os.path.join(out, outfileName)}.{ext(mode, file)}"
+            
+            if not os.path.isfile(f"{outfile}"):
                 with open(file, "rb") as infile:
                     if verbose:
-                        tqdm.write(f"[ in  ] : path : '{file}', output : '{os.path.join(out, file.stem)}.{ext(mode, file)}'")
-                    queue_in.put({"path": f"{os.path.join(out, file.stem)}.{ext(mode, file)}", "bytes": infile.read()})
+                        tqdm.write(f"[ in  ] : path : '{file}', output : '{outfile}'")
+                    queue_in.put({"path": f"{outfile}", "bytes": infile.read()})
+            else:
+                tqdm.write(f"double surname : '{file}'")
             
             write_queue(queue_out, verbose)
     
