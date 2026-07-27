@@ -400,6 +400,11 @@ def main() -> None:
         help="Allow execution on unsupported kernels.",
         action="store_true"
     )
+    parser.add_argument(
+        "--verbose",
+        help="",
+        action="store_true"
+    )
     
     subparsers = parser.add_subparsers(
         dest="command",
@@ -422,16 +427,6 @@ def main() -> None:
         "--output",
         help="Foler ouput.",
         required=True
-    )
-    #export_parser.add_argument(
-    #    "--pass2png",
-    #    help="convert input format to png",
-    #    action="store_true"
-    #)
-    export_parser.add_argument(
-        "--verbose",
-        help="",
-        action="store_true"
     )
     export_parser.add_argument(
         "--threads",
@@ -483,11 +478,6 @@ def main() -> None:
         "--no-recursive",
         action="store_true",
         help=_help_no_recursive
-    )
-    index_parser.add_argument(
-        "--verbose",
-        help="",
-        action="store_true"
     )
     index_parser.add_argument(
         "--threads",
