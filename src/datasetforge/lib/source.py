@@ -1,12 +1,17 @@
 import os
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 in_type: list[str] = [
     "*.jpg",
     "*.jpeg",
     "*.png"
 ]
+experimental_type: list[str] = [
+    "*.webp"
+]
+
+in_type.extend(experimental_type)
 
 def sourceGen(path: list[str], recursive: bool) -> Generator[Path, None, None]:
     if recursive:

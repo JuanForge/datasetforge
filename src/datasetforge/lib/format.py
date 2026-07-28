@@ -1,5 +1,7 @@
 import io
+
 from PIL import Image
+
 
 class errors:
     class UnsupportedAnimation(Exception):

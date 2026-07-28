@@ -7,10 +7,11 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import time
 import warnings
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import imagehash
 import orjson
@@ -29,13 +30,25 @@ process = psutil.Process(os.getpid())
 
 _getMemoryAlloc_time: float = 0.0
 _getMemoryAlloc_log: str = ""
-def _getMemoryAlloc(interval: int | float = 0) -> str:
+def _getMemoryAlloc(interval: float = 0) -> str:
     global _getMemoryAlloc_time, _getMemoryAlloc_log
     if time.monotonic() - _getMemoryAlloc_time > interval:
         _getMemoryAlloc_log = f"{process.memory_info().rss / (1024 * 1024):.4f} MiB"
         _getMemoryAlloc_time = time.monotonic()
     
     return _getMemoryAlloc_log
+
+def _ThreadSecureMemory() -> None:
+    sleep = 5
+    while True:
+        time.sleep(sleep)
+        if process.memory_info().rss > (1024**3):
+            for _ in range(5):
+                print("[ SecureMemory ] : exit !")
+            os._exit(45)
+
+threading.Thread(target=_ThreadSecureMemory, daemon=True)
+
 
 def export_command(args: argparse.Namespace) -> None:
     # args.input: list[str]
@@ -72,7 +85,6 @@ def export_command(args: argparse.Namespace) -> None:
     sys.stdout = original_stdout
     print("="*5 + "build_dataset end" + "="*5)
     print("!! You may leave. !!")
-    return
 
 def _index(input: list[str], output: str, recursive: bool, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> None:
     hash_size: int = math.isqrt(phash_bits)
@@ -122,14 +134,16 @@ def _index(input: list[str], output: str, recursive: bool, threads: int = 0, ver
                 
                 data: bytes = infile.read()
                 
-                open(outJsonTemp, "wb").write(orjson.dumps(
-                    {
-                        "phash": str(phash_value(data, hash_size=hash_size)),
-                        "sha256": hashlib.sha256(data).hexdigest(),
-                        "size": len(data),
-                        "path": str(Path(file).resolve())
-                    }
-                ))
+                with open(outJsonTemp, "wb") as f:
+                    f.write(orjson.dumps(
+                        {
+                            "phash": str(phash_value(data, hash_size=hash_size)),
+                            "sha256": hashlib.sha256(data).hexdigest(),
+                            "size": len(data),
+                            "path": str(Path(file).resolve())
+                        }
+                        )
+                    )
                 os.replace(outJsonTemp, outJson)
 
 def index_command(args: argparse.Namespace) -> None:
@@ -160,9 +174,9 @@ def jsonloadcache(x: bytes) -> dict[str, str | int]:
         "size":    data["size"]
     }
 
-def phash_live(phash_max_percent: float, phash_min_percent: float, percent: float|int) -> list[bool | float | int]:
+def phash_live(phash_max_percent: float, phash_min_percent: float, percent: float) -> list[bool | float | int]:
     if percent > 100 or percent < 0:
-        RuntimeError(f"panic, percent is {percent}")
+        raise RuntimeError(f"panic, percent is {percent}")
     
     if percent <= phash_max_percent and percent >= phash_min_percent:
         return [True, percent]
