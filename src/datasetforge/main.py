@@ -26,6 +26,11 @@ from datasetforge.lib.inject_console import PrefixWriter
 from datasetforge.lib.phash import get as phash_value
 from datasetforge.lib.source import sourceGen
 
+
+class errors:
+    class invalidMemoryUnit(Exception):
+        pass
+
 process = psutil.Process(os.getpid())
 
 _getMemoryAlloc_time: float = 0.0
@@ -38,16 +43,35 @@ def _getMemoryAlloc(interval: float = 0) -> str:
     
     return _getMemoryAlloc_log
 
-def _ThreadSecureMemory() -> None:
+def _ThreadSecureMemory(x: int) -> None:
     sleep = 5
     while True:
         time.sleep(sleep)
-        if process.memory_info().rss > (1024**3):
-            for _ in range(5):
-                print("[ SecureMemory ] : exit !")
+        size: int = process.memory_info().rss
+        if size > x:
+            for _ in range(5): print(f"[ SecureMemory ] : memory : {size} : EXIT !")
             os._exit(45)
 
-threading.Thread(target=_ThreadSecureMemory, daemon=True)
+UNITS: dict[str, int] = {
+    "K": 1024,
+    "M": 1024**2,
+    "G": 1024**3,
+    "T": 1024**4,
+}
+
+def parse_size(value: str) -> int:
+    if value[-1] in UNITS:
+        value = value.upper().replace(",", ".").strip()
+        
+        for unit, multiplier in UNITS.items():
+            if value.endswith(unit):
+                number = float(value[:-1])
+                return int(number * multiplier)
+        
+        return int(float(value))
+    else:
+        raise errors.invalidMemoryUnit()
+
 
 
 def export_command(args: argparse.Namespace) -> None:
@@ -186,8 +210,8 @@ def phash_live(phash_max_percent: float, phash_min_percent: float, percent: floa
 def duplicates_command(args: argparse.Namespace) -> None:
     # args.top_k: int
     # args.phash: bool
-    # args.input: list[str]
-    # args.input_cache: str
+    # args.input: list[str] | None
+    # args.input_cache: str | None
     # args.output: str
     # args.verbose: bool
     # args.steam: bool
@@ -425,7 +449,12 @@ def main() -> None:
         help="",
         action="store_true"
     )
-    
+    parser.add_argument(
+        "--max-memory",
+        help="K, M, G, T",
+        type=str,
+        default=None
+    )
     subparsers = parser.add_subparsers(
         dest="command",
         required=True
@@ -525,12 +554,14 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--input",
         nargs="+",
-        help="Folders of the datasets."
+        help="Folders of the datasets.",
+        default=None
     )
     duplicates_parser.add_argument(
         "--input-cache",
         help="Folder of the cached json.",
-        type=str
+        type=str,
+        default=None
     )
     #duplicates_parser.add_argument(
     #    "--phash",
@@ -606,6 +637,13 @@ def main() -> None:
         """
         )
         sys.exit(295)
+    
+    if not args.max_memory is None:
+        threading.Thread(
+            target=_ThreadSecureMemory,
+            args=(parse_size(args.max_memory),),
+            daemon=True
+        ).start()
     
     args.func(args)
 

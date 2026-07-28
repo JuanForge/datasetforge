@@ -46,7 +46,7 @@ def unit(queue_in: QueueType[dict[str, bytes]], queue_out: QueueType[dict[str, b
                     "bytes": algo(entry["bytes"], format=str(format))
                 }
             )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         if type(entry) is dict:
             path = entry.get("path")
         else:
