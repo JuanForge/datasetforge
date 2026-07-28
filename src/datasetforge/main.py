@@ -261,7 +261,9 @@ def duplicates_command(args: argparse.Namespace) -> None:
             )
             
             for file in pbar:
-                data = jsonloadcache(open(file, "rb").read())
+                with open(file, "rb") as _f:
+                    _data = _f.read()
+                data = jsonloadcache(_data)
                 
                 
                 path = str(data["path"])
@@ -312,7 +314,9 @@ def duplicates_command(args: argparse.Namespace) -> None:
                         yield str(file)
             
             for file in file_stream():
-                data = jsonloadcache(open(file, "rb").read())
+                with open(file, "rb") as _f:
+                    _data = _f.read()
+                data = jsonloadcache(_data)
                 
                 path = str(data["path"])
                 phash = imagehash.hex_to_hash(data["phash"])
@@ -322,7 +326,9 @@ def duplicates_command(args: argparse.Namespace) -> None:
                     if old_file == file:
                         continue
                     
-                    old_data = jsonloadcache(open(old_file, "rb").read())
+                    with open(old_file, "rb") as f:
+                        old_data_bin = f.read()
+                    old_data = jsonloadcache(old_data_bin)
                     
                     old_path = str(old_data["path"])
                     old_phash = imagehash.hex_to_hash(old_data["phash"])
