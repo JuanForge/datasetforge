@@ -15,7 +15,10 @@ When `--stream` is not used, performance is generally much higher while still ma
 * **Massive datasets:** Supported through `--stream`, at the cost of longer execution times for certain operations.
 
 
-
+# Install
+```
+pip install git+https://github.com/JuanForge/datasetforge.git
+```
 
 
 
