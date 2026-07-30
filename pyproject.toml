@@ -19,7 +19,10 @@ dependencies = [
     "setproctitle",
     "ImageHash",
     "orjson",
-    "psutil"
+    "psutil",
+    "xxhash",
+    "humanize",
+    "blake3"
 ]
 
 [project.scripts]

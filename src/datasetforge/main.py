@@ -20,6 +20,7 @@ from imagehash import ImageHash
 from tqdm import tqdm
 
 from datasetforge import __version__
+from datasetforge.lib.benchmark import benchmark
 from datasetforge.lib.build_dataset import RenameMode
 from datasetforge.lib.build_dataset import main as lib_build_dataset_main
 from datasetforge.lib.inject_console import PrefixWriter
@@ -71,6 +72,9 @@ def parse_size(value: str) -> int:
         return int(float(value))
     else:
         raise errors.invalidMemoryUnit()
+
+def benchmark_command(args: argparse.Namespace) -> None:
+    benchmark()
 
 
 
@@ -622,6 +626,15 @@ def main() -> None:
     #)
     duplicates_parser.set_defaults(
         func=duplicates_command
+    )
+    # == benchmark ==
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="",
+        allow_abbrev=False
+    )
+    benchmark_parser.set_defaults(
+        func=benchmark_command
     )
     # ======
     
