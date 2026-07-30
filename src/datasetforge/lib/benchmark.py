@@ -19,15 +19,15 @@ def benchmark() -> None:
         print("locked !")
         results: list[tuple[str, float]] = []
         for algo, func in _algo.items():
-            start_time = time.monotonic()
+            start_time = time.perf_counter()
             getattr(func(data), "hexdigest")  # noqa: B009
-            _total = time.monotonic() - start_time
+            _total = time.perf_counter() - start_time
             #print(f"[{algo}] : time : {_total}")
             results.append((algo, _total))
         
         results.sort(key=lambda x: x[1])
         for index, (algo, ttime) in enumerate(results):
-            print(f"[#{index}] : [{algo}] : {ttime}")
+            print(f"[#{index}] : [{algo}] : {ttime:.16f}s | {(_size_memory / ttime / (1024**3)):.2f} GiB/s")
 
 if __name__ == "__main__":
     benchmark()
