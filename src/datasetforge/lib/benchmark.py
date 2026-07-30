@@ -14,12 +14,20 @@ _algo = {
 
 def benchmark() -> None:
     for _size_memory in [1024, 1024 * 1024, 1024 ** 3, (1024 ** 3) * 10]:
+        print(f"lock memory : {humanize.naturalsize(_size_memory, binary=True)}...", end='', flush=True)
         data = bytearray(_size_memory)
-        print(f"lock memory : {humanize.naturalsize(_size_memory, binary=True)}")
+        print("locked !")
+        results: list[tuple[str, float]] = []
         for algo, func in _algo.items():
             start_time = time.monotonic()
             getattr(func(data), "hexdigest")  # noqa: B009
-            print(f"[{algo}] : time : {time.monotonic() - start_time}")
+            _total = time.monotonic() - start_time
+            #print(f"[{algo}] : time : {_total}")
+            results.append((algo, _total))
+        
+        results.sort(key=lambda x: x[1])
+        for index, (algo, ttime) in enumerate(results):
+            print(f"[#{index}] : [{algo}] : {ttime}")
 
 if __name__ == "__main__":
     benchmark()
