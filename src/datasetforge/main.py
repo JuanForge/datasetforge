@@ -202,7 +202,7 @@ def jsonloadcache(x: bytes) -> dict[str, str | int]:
         "size":    data["size"]
     }
 
-def phash_live(phash_max_percent: float, phash_min_percent: float, percent: float) -> list[bool | float | int]:
+def _phash_live(phash_max_percent: float, phash_min_percent: float, percent: float) -> list[bool | float | int]:
     if percent > 100 or percent < 0:
         raise RuntimeError(f"panic, percent is {percent}")
     
@@ -211,7 +211,7 @@ def phash_live(phash_max_percent: float, phash_min_percent: float, percent: floa
     
     return [False, 0]
 
-def duplicates_command(args: argparse.Namespace) -> None:
+
     # args.top_k: int
     # args.phash: bool
     # args.input: list[str] | None
@@ -224,37 +224,48 @@ def duplicates_command(args: argparse.Namespace) -> None:
     # args.phash_min_percent: float - default == 0.0
     # args.phash_bits: int
     # args.no_recursive: bool
+
+
+def _duplicates_command(
+    top_k: int,
+    input: list[str] | None,
+    input_cache: str | None,
+    output: str,
+    verbose: bool,
+    stream: bool,
+    phash_live: bool,
+    phash_max_percent: float,
+    phash_min_percent: float,
+    phash_bits: int,
+    no_recursive: bool
+) -> None:
     tmp = None
     try:
-        top_k = int(args.top_k)
-        #if top_k <= 0:
-        #    raise RuntimeError("invalide top-k value")
-        
-        if bool(args.input) == bool(args.input_cache):
+        if bool(input) == bool(input_cache):
             raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
         
-        if args.phash_max_percent == 0.0 and args.phash_live:
+        if phash_max_percent == 0.0 and phash_live:
             raise RuntimeError("--phash-live defined without --phash-max-percent")
         
-        if (not args.phash_live) and args.phash_max_percent != 0.0:
+        if (not phash_live) and phash_max_percent != 0.0:
             raise RuntimeError("--phash-max-percent defined without --phash-live")
         
-        if args.no_recursive and (not args.input):
+        if no_recursive and (not input):
             raise RuntimeError("--no--recursive requires --input")
         
         
-        if args.input:
+        if input:
             print("Build the index files...")
             tmp = tempfile.TemporaryDirectory()
             _index(
-                input=args.input,
+                input=input,
                 output=tmp.name,
-                recursive=not args.no_recursive,
-                phash_bits=args.phash_bits
+                recursive=not no_recursive,
+                phash_bits=phash_bits
             )
             _input = os.path.join(tmp.name, __version__)
         else:
-            _input = args.input_cache
+            _input = input_cache
         
         start_time = time.monotonic()
         
@@ -274,7 +285,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
         comparisons = []
         counter = itertools.count()
         
-        if not args.stream:
+        if not stream:
             
             hashes: dict[str, ImageHash] = {}
             
@@ -300,13 +311,12 @@ def duplicates_command(args: argparse.Namespace) -> None:
                 for old_path, old_phash in hashes.items():
                     
                     _counter: int = next(counter)
-                    if _counter % 100 == 0:
-                        pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2))
+                    pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2))
                     
                     distance = phash - old_phash
                     
-                    if args.phash_live:
-                        temp = phash_live(float(args.phash_max_percent), float(args.phash_min_percent), percent = distance/phash_bits * 100)
+                    if phash_live:
+                        temp = _phash_live(phash_max_percent, phash_min_percent, percent = distance/phash_bits * 100)
                         if temp[0]:
                             tqdm.write(f"phash-live : {path} - {old_path} : {temp[1]}% diff")
                     
@@ -363,8 +373,8 @@ def duplicates_command(args: argparse.Namespace) -> None:
                     
                     distance = phash - old_phash
                     
-                    if args.phash_live:
-                        temp = phash_live(float(args.phash_max_percent), float(args.phash_min_percent), percent = distance/phash_bits * 100)
+                    if phash_live:
+                        temp = _phash_live(phash_max_percent, phash_min_percent, percent = distance/phash_bits * 100)
                         if temp[0]:
                             tqdm.write(f"phash-live : {path} - {old_path} : {temp[1]}% diff")
                     
@@ -413,6 +423,32 @@ def duplicates_command(args: argparse.Namespace) -> None:
         pass
     finally:
         del tmp
+
+def duplicates_command(args: argparse.Namespace) -> None:
+    # args.top_k: int
+    # args.input: list[str] | None
+    # args.input_cache: str | None
+    # args.output: str
+    # args.verbose: bool
+    # args.stream: bool
+    # args.phash_live: bool
+    # args.phash_max_percent: float - default == 0.0
+    # args.phash_min_percent: float - default == 0.0
+    # args.phash_bits: int
+    # args.no_recursive: bool
+    _duplicates_command(
+        top_k=args.top_k,
+        input=args.input,
+        input_cache=args.input_cache,
+        output=args.output,
+        verbose=args.verbose,
+        stream=args.stream,
+        phash_live=args.phash_live,
+        phash_max_percent=args.phash_max_percent,
+        phash_min_percent=args.phash_min_percent,
+        phash_bits=args.phash_bits,
+        no_recursive=args.no_recursive
+    )
 
 
 
@@ -620,10 +656,6 @@ def main() -> None:
         action="store_true",
         help="Requires `--input` to operate; " + _help_no_recursive
     )
-    #duplicates_parser.add_argument(
-    #    "--auto-index",
-    #    action="store_true"
-    #)
     duplicates_parser.set_defaults(
         func=duplicates_command
     )
