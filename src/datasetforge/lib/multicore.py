@@ -1,9 +1,17 @@
 import os
+import time
 from collections.abc import Callable, Generator
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
 from queue import Empty as queue_Empty
 from typing import Any
+
+from setproctitle import setproctitle
+
+
+class errors:
+    class workerRunError(Exception):
+        pass
 
 
 def _worker(
@@ -14,8 +22,9 @@ def _worker(
     # pyrefly: ignore [explicit-any]
     output_Queue: QueueType[dict[Any, Any]]
     ) -> None:
-    try:
-        while True:
+    setproctitle(f"worker-{os.getpid()}")
+    while True:
+        try:
             tache = input_Queue.get(block=True)
             if tache == None:
                 return
@@ -26,12 +35,22 @@ def _worker(
                         "return": func(*tache["args"], **tache["kwargs"])
                     }
                 )
-    except BaseException as e:  # noqa: BLE001
-        output_Queue.put({"error": True, "raise": e})
+        except BaseException as e:  # noqa: BLE001
+            output_Queue.put({"error": True, "raise": e})
 
 class multicore:
-    # pyrefly: ignore [explicit-any]
-    def __init__(self, func: Callable[..., Any], core: int = 0,) -> None:
+    """
+    for dev
+    - If you plan to use this code, make sure to design your operations as atomic transactions, since the workers may need to be terminated forcefully.
+    """
+    def __init__(
+        self,
+        # pyrefly: ignore [explicit-any]
+        func: Callable[..., Any],
+        core: int = 0,
+        closeOnError: bool = True,
+        timeout: float | None = None
+    ) -> None:
         core = core or os.cpu_count() or 1
         # pyrefly: ignore [explicit-any]
         self._input_Queue: QueueType[dict[Any, Any] | None] = Queue(maxsize=core)
@@ -46,9 +65,14 @@ class multicore:
             )
             p.start()
             self.workers.append(p)
+        self.closed: bool = False
+        self.closeOnError = closeOnError
+        self.timeout = timeout
+        self._sleepStop: float = 0.01
     
     # pyrefly: ignore [explicit-any]
     def function(self, func: Callable[..., Any]) -> None:
+        """update the initial function"""
         self.func = func
     
     def put(
@@ -76,17 +100,28 @@ class multicore:
             
             if data["error"]:
                 print("="*5 + "ERROR IN WORKERS" + "="*5)
-                raise data["raise"]
+                if self.closeOnError:
+                    self.close()
+                raise errors.workerRunError(str(data["raise"]))
             else:
                 out.append(data["return"])
         return out
     
     def close(self) -> None:
-        for _ in self.workers:
-            self._input_Queue.put(None)
-        
-        for worker in self.workers:
-            worker.join()
+        if not self.closed:
+            start_time = time.monotonic()
+            for _ in self.workers:
+                self._input_Queue.put(None)
+            
+            while any(
+                worker.is_alive() for worker in self.workers
+                ) and (self.timeout is None or (time.monotonic() - start_time) < self.timeout):
+                time.sleep(self._sleepStop)
+            
+            for worker in self.workers:
+                if worker.is_alive():
+                    worker.kill()
+                worker.join()
 
 if __name__ == "__main__":
     _i = 0
@@ -97,15 +132,23 @@ if __name__ == "__main__":
             yield _i
     
     def _test(x: str) -> str:
-        print(f"_test : {x}")
+        for i in range(1000 ** 1024):
+            i - 800
         return x
     
-    test = multicore(func=_test, core=2)
-    
-    for i in _GenTest():
-        test.put(x=i, z=i)
-        print(str(95), test._input_Queue.qsize())
-        print(f"81 : {test.get()}")
-        print(str(97), test._input_Queue.qsize())
-    print("close...")
-    test.close()
+    test = multicore(
+        func=_test,
+        core=(os.cpu_count() or 1) * 2,
+        timeout=None
+    )
+    try:
+        for i in _GenTest():
+            test.put(x=i)
+            #print(str(95), test._input_Queue.qsize())
+            print(f"81 : {test.get()}")
+            #print(str(97), test._input_Queue.qsize())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("close...")
+        test.close()
