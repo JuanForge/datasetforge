@@ -24,6 +24,7 @@ from datasetforge.lib.benchmark import benchmark
 from datasetforge.lib.build_dataset import RenameMode
 from datasetforge.lib.build_dataset import main as lib_build_dataset_main
 from datasetforge.lib.inject_console import PrefixWriter
+from datasetforge.lib.multicore import Multicore
 from datasetforge.lib.phash import get as phash_value
 from datasetforge.lib.source import sourceGen
 

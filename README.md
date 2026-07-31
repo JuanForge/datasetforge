@@ -1,5 +1,7 @@
 # Designed for Datasets of Any Size
 
+## The --stream option will likely be removed due to the maintenance overhead it introduces.
+
 This project is designed to work efficiently with both small datasets and extremely large collections, scaling up to datasets containing billions of files.
 
 Its goal is to enable dataset analysis and optimization at any scale. Removing duplicate and redundant data improves the overall quality of a dataset, provides a more accurate representation of the data available for training, and reduces unexpected issues during model training.
