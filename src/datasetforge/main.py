@@ -265,7 +265,7 @@ def _duplicates_command(
             )
             _input = os.path.join(tmp.name, __version__)
         else:
-            _input = input_cache
+            _input = str(input_cache)
         
         start_time = time.monotonic()
         
