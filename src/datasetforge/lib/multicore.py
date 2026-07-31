@@ -1,8 +1,10 @@
+from typing import Generator
 import os
 from collections.abc import Callable, Iterable
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
 from typing import Any
+from queue import Empty as queue_Empty
 
 
 def _worker(
@@ -14,16 +16,17 @@ def _worker(
     output_Queue: QueueType[dict[Any, Any]]
     ) -> None:
     try:
-        tache = input_Queue.get(block=True)
-        if tache == None:
-            return
-        else:
-            output_Queue.put(
-                {
-                    "error": False,
-                    "return": func(tache["args"])
-                }
-            )
+        while True:
+            tache = input_Queue.get(block=True)
+            if tache == None:
+                return
+            else:
+                output_Queue.put(
+                    {
+                        "error": False,
+                        "return": func(tache["args"])
+                    }
+                )
     except BaseException as e:  # noqa: BLE001
         output_Queue.put({"error": True, "raise": e})
 
@@ -46,15 +49,26 @@ class multicore:
             self.workers.append(p)
     
     # pyrefly: ignore [explicit-any]
-    def put_and_get(self, args: Iterable[Any], lock: bool = True) -> list[Any]:
+    def put(self, args: Iterable[Any], lock: bool = True) -> None:
         self._input_Queue.put({"args": args})
-        data = self._output_Queue.get()
-        
-        if data["error"]:
-            print("="*5 + "ERROR IN WORKERS" + "="*5)
-            raise data["raise"]
-        else:
-            return data["return"]
+    
+    # pyrefly: ignore [explicit-any]
+    def get(self) -> list[Any]:
+        """no lock"""
+        # pyrefly: ignore [explicit-any]
+        out: list[Any] = []
+        while True:
+            try:
+                data = self._output_Queue.get(block=False)
+            except queue_Empty:
+                break
+            
+            if data["error"]:
+                print("="*5 + "ERROR IN WORKERS" + "="*5)
+                raise data["raise"]
+            else:
+                out.append(data["return"])
+        return out
     
     def close(self) -> None:
         for _ in self.workers:
@@ -64,10 +78,23 @@ class multicore:
             worker.join()
 
 if __name__ == "__main__":
+    _i = 0
+    def _GenTest() -> Generator[int, None, None]:
+        global _i
+        while True:
+            _i += 1
+            yield _i
+    
     def _test(x: str) -> str:
         print(f"_test : {x}")
         return x
+    
     test = multicore(func=_test, core=2)
-    print(f"56 : {test.put_and_get({"path": "/test"})}")
+    
+    for i in _GenTest():
+        test.put({"num": i})
+        print(str(95), test._input_Queue.qsize())
+        print(f"81 : {test.get()}")
+        print(str(97), test._input_Queue.qsize())
     print("close...")
     test.close()
