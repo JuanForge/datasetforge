@@ -150,7 +150,8 @@ def main(
                 outfileName: str = file.stem
             
             elif rename is RenameMode.SHA256:
-                _cachedFile = open(file, "rb").read()
+                with open(file, "rb") as f:
+                    _cachedFile = f.read()
                 outfileName = hashlib.sha256(_cachedFile).hexdigest()
             
             else:

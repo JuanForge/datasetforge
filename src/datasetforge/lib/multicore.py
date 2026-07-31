@@ -4,7 +4,7 @@ from collections.abc import Callable, Generator
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
 from queue import Empty as queue_Empty
-from typing import Any
+from typing import Any, Self
 
 from setproctitle import setproctitle
 
@@ -38,7 +38,7 @@ def _worker(
         except BaseException as e:  # noqa: BLE001
             output_Queue.put({"error": True, "raise": e})
 
-class multicore:
+class Multicore:
     """
     for dev
     - If you plan to use this code, make sure to design your operations as atomic transactions, since the workers may need to be terminated forcefully.
@@ -48,12 +48,13 @@ class multicore:
         # pyrefly: ignore [explicit-any]
         func: Callable[..., Any],
         core: int = 0,
+        input_Queue: int | None = None,
         closeOnError: bool = True,
         timeout: float | None = None
     ) -> None:
         core = core or os.cpu_count() or 1
         # pyrefly: ignore [explicit-any]
-        self._input_Queue: QueueType[dict[Any, Any] | None] = Queue(maxsize=core)
+        self._input_Queue: QueueType[dict[Any, Any] | None] = Queue(maxsize=input_Queue or core)
         # pyrefly: ignore [explicit-any]
         self._output_Queue: QueueType[dict[Any, Any]] = Queue()
         self.func = func
@@ -69,6 +70,12 @@ class multicore:
         self.closeOnError = closeOnError
         self.timeout = timeout
         self._sleepStop: float = 0.01
+    
+    def __enter__(self) -> Self:
+        return self
+    
+    def __exit__(self, *_) -> None:
+        self.close()
     
     # pyrefly: ignore [explicit-any]
     def function(self, func: Callable[..., Any]) -> None:
@@ -124,6 +131,9 @@ class multicore:
                 worker.join()
 
 if __name__ == "__main__":
+    import itertools
+    setproctitle("main dev worker")
+    i_gen = itertools.count()
     _i = 0
     def _GenTest() -> Generator[int, None, None]:
         global _i
@@ -132,23 +142,29 @@ if __name__ == "__main__":
             yield _i
     
     def _test(x: str) -> str:
-        for i in range(1000 ** 1024):
+        coef = 1
+        for i in range(100_000_000 * coef):
             i - 800
         return x
     
-    test = multicore(
-        func=_test,
-        core=(os.cpu_count() or 1) * 2,
-        timeout=None
-    )
+    #test = Multicore(
+    #    func=_test,
+    #    core=(os.cpu_count() or 1) * 2,
+    #    timeout=None
+    #)
     try:
-        for i in _GenTest():
-            test.put(x=i)
-            #print(str(95), test._input_Queue.qsize())
-            print(f"81 : {test.get()}")
-            #print(str(97), test._input_Queue.qsize())
+        # for i in _GenTest():
+        #     test.put(x=i)
+        # test.close()
+        
+        with Multicore(core=0, func=_test, timeout=0) as s:
+            while True:
+                num = next(i_gen)
+                s.put(x=num)
+                for i in s.get():
+                    print(i)
+        print("163 : exit")
     except KeyboardInterrupt:
         pass
     finally:
         print("close...")
-        test.close()
