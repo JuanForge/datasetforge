@@ -1,10 +1,9 @@
-from typing import Generator
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
-from typing import Any
 from queue import Empty as queue_Empty
+from typing import Any
 
 
 def _worker(
@@ -24,7 +23,7 @@ def _worker(
                 output_Queue.put(
                     {
                         "error": False,
-                        "return": func(tache["args"])
+                        "return": func(*tache["args"], **tache["kwargs"])
                     }
                 )
     except BaseException as e:  # noqa: BLE001
@@ -49,8 +48,20 @@ class multicore:
             self.workers.append(p)
     
     # pyrefly: ignore [explicit-any]
-    def put(self, args: Iterable[Any], lock: bool = True) -> None:
-        self._input_Queue.put({"args": args})
+    def function(self, func: Callable[..., Any]) -> None:
+        self.func = func
+    
+    def put(
+        self, 
+        # pyrefly: ignore [explicit-any]
+        *args: Any,
+        # pyrefly: ignore [explicit-any]
+        **kwargs: Any
+    ) -> None:
+        self._input_Queue.put({
+            "args": args,
+            "kwargs": kwargs,
+        })
     
     # pyrefly: ignore [explicit-any]
     def get(self) -> list[Any]:
@@ -92,7 +103,7 @@ if __name__ == "__main__":
     test = multicore(func=_test, core=2)
     
     for i in _GenTest():
-        test.put({"num": i})
+        test.put(x=i, z=i)
         print(str(95), test._input_Queue.qsize())
         print(f"81 : {test.get()}")
         print(str(97), test._input_Queue.qsize())
