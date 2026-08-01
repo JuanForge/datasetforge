@@ -1,16 +1,9 @@
-import hashlib
 import time
 
-import blake3
 import humanize
-import xxhash
 
-_algo = {
-    "sha256": hashlib.sha256,
-    "XXH3-64": xxhash.xxh3_64,
-    "XXH3-128": xxhash.xxh3_128,
-    "BLAKE3": blake3.blake3
-}
+from datasetforge.lib.hash import hash_algo
+
 
 def benchmark() -> None:
     for _size_memory in [1024, 1024 * 1024, 1024 ** 3, (1024 ** 3) * 10]:
@@ -18,7 +11,7 @@ def benchmark() -> None:
         data = bytearray(_size_memory)
         print("locked !")
         results: list[tuple[str, float]] = []
-        for algo, func in _algo.items():
+        for algo, func in hash_algo.items():
             start_time = time.perf_counter()
             getattr(func(data), "hexdigest")  # noqa: B009
             _total = time.perf_counter() - start_time

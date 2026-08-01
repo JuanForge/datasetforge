@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import heapq
 import itertools
 import json
@@ -10,8 +9,9 @@ import tempfile
 import threading
 import time
 import warnings
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
+from typing import Any
 
 import imagehash
 import orjson
@@ -23,6 +23,7 @@ from datasetforge import __version__
 from datasetforge.lib.benchmark import benchmark
 from datasetforge.lib.build_dataset import RenameMode
 from datasetforge.lib.build_dataset import main as lib_build_dataset_main
+from datasetforge.lib.hash import hash_algo, hash_default
 from datasetforge.lib.inject_console import PrefixWriter
 from datasetforge.lib.multicore import Multicore
 from datasetforge.lib.phash import get as phash_value
@@ -115,7 +116,9 @@ def export_command(args: argparse.Namespace) -> None:
     print("="*5 + "build_dataset end" + "="*5)
     print("!! You may leave. !!")
 
-def _index(input: list[str], output: str, recursive: bool, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> None:
+
+# pyrefly: ignore [explicit-any]
+def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[bytes], Any], hash_name: str, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> None:
     hash_size: int = math.isqrt(phash_bits)
     print(f"hash size : {hash_size}")
     
@@ -132,7 +135,8 @@ def _index(input: list[str], output: str, recursive: bool, threads: int = 0, ver
             {
                 "phash": {
                     "bits": phash_bits
-                }
+                },
+                "hash": hash_name
             }
         ))
     
@@ -167,7 +171,7 @@ def _index(input: list[str], output: str, recursive: bool, threads: int = 0, ver
                     f.write(orjson.dumps(
                         {
                             "phash": str(phash_value(data, hash_size=hash_size)),
-                            "sha256": hashlib.sha256(data).hexdigest(),
+                            "hash": hash_func(data).hexdigest(),
                             "size": len(data),
                             "path": str(Path(file).resolve())
                         }
@@ -189,7 +193,9 @@ def index_command(args: argparse.Namespace) -> None:
             recursive=not args.no_recursive,
             threads=args.threads,
             verbose=args.verbos,
-            phash_bits=args.phash_bits
+            phash_bits=args.phash_bits,
+            hash_func=hash_algo[args.hash],
+            hash_name=args.hash
         )
     except KeyboardInterrupt:
         return
@@ -227,6 +233,7 @@ def _phash_live(phash_max_percent: float, phash_min_percent: float, percent: flo
     # args.no_recursive: bool
 
 
+def _duplicates_command_worker() -> None: pass
 def _duplicates_command(
     top_k: int,
     input: list[str] | None,
@@ -262,7 +269,9 @@ def _duplicates_command(
                 input=input,
                 output=tmp.name,
                 recursive=not no_recursive,
-                phash_bits=phash_bits
+                phash_bits=phash_bits,
+                hash_name=hash_default,
+                hash_func=hash_algo[hash_default]
             )
             _input = os.path.join(tmp.name, __version__)
         else:
@@ -581,7 +590,11 @@ def main() -> None:
         type=int,
         default=64
     )
-    
+    index_parser.add_argument(
+        "--hash",
+        choices=list(hash_algo.keys()),
+        default=hash_default
+    )
     index_parser.set_defaults(
         func=index_command
     )
