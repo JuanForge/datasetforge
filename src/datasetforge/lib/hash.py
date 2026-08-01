@@ -9,4 +9,4 @@ hash_algo = {
     "xxh3-128": xxhash.xxh3_128,
     "blake3": blake3.blake3
 }
-hash_default = "sha256"
+hash_default = "xxh3-128"

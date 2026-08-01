@@ -1,4 +1,6 @@
 from typing import TextIO
+
+
 class PrefixWriter:
     def __init__(self, stdout: TextIO, prefix: str) -> None:
         self.stdout = stdout
