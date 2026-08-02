@@ -68,10 +68,11 @@ For general duplicate detection, it is recommended to keep `--phash-min-percent`
 
 - **n** = dataset size (number of indexed images)
 - **k** = `--top-k` value
+- **t** = `--threads` value
 
 | Mode | Comparisons        | Disk reads | Memory usage |
 |------|--------------------|------------|--------------|
-| Default | $\frac{n(n-1)}{2}$  | O(n)       | O(n + k)     |
+| Default | $\frac{n(n-1)}{2}$  | O(n)       | $O(n + k \times t)$     |
 | `--stream` |  $n(n-1)$  | O(n²)      | O(k)         |
 
 `--stream` is useful for very large datasets where memory is limited, but it can be significantly slower because files must be read multiple times.

@@ -1,8 +1,12 @@
 import os
+import platform
+import signal
 import time
+import traceback
 from collections.abc import Callable, Generator
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
+from queue import Empty
 from queue import Empty as queue_Empty
 from typing import Any, Self
 
@@ -12,31 +16,58 @@ from setproctitle import setproctitle
 class errors:
     class workerRunError(Exception):
         pass
+    class UnexpectedWorkerExitError(Exception):
+        pass
 
 
 def _worker(
     # pyrefly: ignore [explicit-any]
     func: Callable[..., Any],
+    
+    # pyrefly: ignore [explicit-any]
+    worker_kwargs: dict[str, Any],
+    
     # pyrefly: ignore [explicit-any]
     input_Queue: QueueType[dict[Any, Any] | None],
+    
     # pyrefly: ignore [explicit-any]
-    output_Queue: QueueType[dict[Any, Any]]
-    ) -> None:
-    setproctitle(f"worker-{os.getpid()}")
+    output_Queue: QueueType[dict[Any, Any]],
+    
+    dev: bool = False
+) -> None:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    
+    if platform.system() == "Linux":
+        setproctitle(f"worker-{os.getpid()}")
+    
     while True:
         try:
             tache = input_Queue.get(block=True)
             if tache == None:
+                if dev: print("stop")
                 return
             else:
                 output_Queue.put(
                     {
                         "error": False,
-                        "return": func(*tache["args"], **tache["kwargs"])
+                        "return": func(
+                            *tache["args"],
+                            **tache["kwargs"],
+                            **worker_kwargs)
                     }
                 )
         except BaseException as e:  # noqa: BLE001
             output_Queue.put({"error": True, "raise": e})
+            print(traceback.format_exc())
+
+
+# pyrefly: ignore [explicit-any]
+def _clear_queue(queue: QueueType[Any]) -> None:
+    while True:
+        try:
+            queue.get_nowait()
+        except Empty:
+            break
 
 class Multicore:
     """
@@ -47,10 +78,13 @@ class Multicore:
         self,
         # pyrefly: ignore [explicit-any]
         func: Callable[..., Any],
+        # pyrefly: ignore [explicit-any]
+        worker_kwargs: None | dict[str, Any] = None,
         core: int = 0,
         input_Queue: int | None = None,
         closeOnError: bool = True,
-        timeout: float | None = None
+        timeout: float | None = None,
+        _dev: bool = False
     ) -> None:
         core = core or os.cpu_count() or 1
         # pyrefly: ignore [explicit-any]
@@ -58,11 +92,20 @@ class Multicore:
         # pyrefly: ignore [explicit-any]
         self._output_Queue: QueueType[dict[Any, Any]] = Queue()
         self.func = func
+        
+        if worker_kwargs is None:
+            worker_kwargs = {}
         self.workers: list[Process] = []
         for _ in range(core):
             p = Process(
                 target=_worker,
-                args=(func, self._input_Queue, self._output_Queue)
+                args=(
+                    func,
+                    worker_kwargs,
+                    self._input_Queue,
+                    self._output_Queue,
+                    _dev
+                )
             )
             p.start()
             self.workers.append(p)
@@ -70,11 +113,15 @@ class Multicore:
         self.closeOnError = closeOnError
         self.timeout = timeout
         self._sleepStop: float = 0.01
+        self._dev = _dev
+        self._workers_health_check_interval: float = 0.75
+        self._workers_health_check_interval_timer = time.monotonic()
     
     def __enter__(self) -> Self:
         return self
     
     def __exit__(self, *_) -> None:
+        if self._dev: print("worker close...")
         self.close()
     
     # pyrefly: ignore [explicit-any]
@@ -89,19 +136,20 @@ class Multicore:
         # pyrefly: ignore [explicit-any]
         **kwargs: Any
     ) -> None:
+        self.status()
         self._input_Queue.put({
             "args": args,
             "kwargs": kwargs,
         })
     
     # pyrefly: ignore [explicit-any]
-    def get(self) -> list[Any]:
-        """no lock"""
+    def get(self, block: bool = False, _status: bool = True) -> list[Any]:
         # pyrefly: ignore [explicit-any]
         out: list[Any] = []
+        if _status: self.status()
         while True:
             try:
-                data = self._output_Queue.get(block=False)
+                data = self._output_Queue.get(block=block)
             except queue_Empty:
                 break
             
@@ -120,15 +168,43 @@ class Multicore:
             for _ in self.workers:
                 self._input_Queue.put(None)
             
+            #for _ in [self._input_Queue, self._output_Queue]:
+            #    _clear_queue(_)
+            
             while any(
                 worker.is_alive() for worker in self.workers
                 ) and (self.timeout is None or (time.monotonic() - start_time) < self.timeout):
                 time.sleep(self._sleepStop)
+                self.get(_status=False)
             
             for worker in self.workers:
                 if worker.is_alive():
+                    print("kill !")
                     worker.kill()
                 worker.join()
+            
+            self._close_Queue([self._input_Queue, self._output_Queue])
+    
+    # pyrefly: ignore [explicit-any]
+    def _close_Queue(self, i: list[QueueType[Any]]) -> None:
+        for _ in i:
+            _clear_queue(_)
+            _.close()
+            _.join_thread()
+    
+    def _status(self) -> bool:
+        if (time.monotonic() - self._workers_health_check_interval_timer) > self._workers_health_check_interval:
+            for _ in self.workers:
+                if not _.is_alive():
+                    return False
+            self._workers_health_check_interval_timer = time.monotonic()
+        return True
+    
+    def status(self) -> None:
+        """trigger an error if one of the workers stops working."""
+        if not self._status():
+            raise errors.UnexpectedWorkerExitError()
+
 
 if __name__ == "__main__":
     import itertools

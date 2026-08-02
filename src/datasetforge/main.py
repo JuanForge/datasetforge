@@ -3,20 +3,20 @@ import heapq
 import itertools
 import json
 import math
+import multiprocessing
 import os
 import sys
 import tempfile
 import threading
 import time
 import warnings
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import imagehash
 import orjson
 import psutil
-from imagehash import ImageHash
 from tqdm import tqdm
 
 from datasetforge import __version__
@@ -219,7 +219,7 @@ def jsonloadcache(x: bytes) -> dict[str, str | int]:
     return {
         "path":    data["path"],
         "phash":   data["phash"],
-        "sha256":  data["sha256"],
+        "hash":    data["hash"],
         "size":    data["size"]
     }
 
@@ -252,225 +252,209 @@ def _duplicates_command(
     top_k: int,
     input: list[str] | None,
     input_cache: str | None,
-    output: str,
     verbose: bool,
-    stream: bool,
     phash_live: bool,
     phash_max_percent: float,
     phash_min_percent: float,
     phash_bits: int,
     no_recursive: bool,
-    experimental_multicore: bool
+    threads: int = os.cpu_count() or 1
 ) -> None:
-    if not experimental_multicore:
-        tmp = None
-        try:
-            if bool(input) == bool(input_cache):
-                raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
-            
-            if phash_max_percent == 0.0 and phash_live:
-                raise RuntimeError("--phash-live defined without --phash-max-percent")
-            
-            if (not phash_live) and phash_max_percent != 0.0:
-                raise RuntimeError("--phash-max-percent defined without --phash-live")
-            
-            if no_recursive and (not input):
-                raise RuntimeError("--no--recursive requires --input")
-            
-            
-            if input:
-                print("Build the index files...")
-                tmp = tempfile.TemporaryDirectory()
-                _index(
-                    input=input,
-                    output=tmp.name,
-                    recursive=not no_recursive,
-                    phash_bits=phash_bits,
-                    hash_name=hash_default,
-                    hash_func=hash_algo[hash_default]
-                )
-                _input = os.path.join(tmp.name, __version__)
+    tmp = None
+    try:
+        if bool(input) == bool(input_cache):
+            raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
+        
+        if phash_max_percent == 0.0 and phash_live:
+            raise RuntimeError("--phash-live defined without --phash-max-percent")
+        
+        if (not phash_live) and phash_max_percent != 0.0:
+            raise RuntimeError("--phash-max-percent defined without --phash-live")
+        
+        if no_recursive and (not input):
+            raise RuntimeError("--no--recursive requires --input")
+        
+        
+        if input:
+            print("Build the index files...")
+            tmp = tempfile.TemporaryDirectory()
+            _index(
+                input=input,
+                output=tmp.name,
+                recursive=not no_recursive,
+                phash_bits=phash_bits,
+                hash_name=hash_default,
+                hash_func=hash_algo[hash_default],
+                verbose=verbose,
+                threads=threads
+            )
+            _input = os.path.join(tmp.name, __version__)
+        else:
+            if input_cache is None:
+                raise RuntimeError(295)
+            _input = input_cache
+        
+        start_time = time.monotonic()
+        
+        META: dict[str, str | int] = {}
+        with open(os.path.join(_input, __version__, "META.json"), "r", encoding="utf-8") as meta:
+            META["phash_bits"] = json.loads(meta.read())["phash"]["bits"]
+        
+        _start_time = time.monotonic()
+        print("syncro...", end='', flush=True)
+        liste: list[Path] = list(Path(os.path.join(_input, __version__, "__unit__")).rglob('*.json'))
+        print(f"done | {time.monotonic() - _start_time}")
+        
+        hashes: list[dict[str, str]] = []
+        
+        _start_time = time.monotonic()
+        print(f"loading {len(liste)} cache file...", end='', flush=True)
+        for entry in liste:
+            data = jsonloadcache(open(entry, "rb").read())  # noqa: SIM115
+            hashes.append(
+                {
+                    "path": str(data["path"]),
+                    "phash": str(data["phash"])
+                }
+            )
+        print(f"done | {time.monotonic() - _start_time}")
+        
+        # for i in range(len(hashes)):
+        #     worker_id = i % core_count
+        #     tasks[worker_id].append(i)
+        
+        # in
+        def _duplicates_command_worker(i: int, top_k: int, _hashes: list[dict[str, str]] | None = None) -> list[dict[str, str | int]]:
+            if _hashes is None:
+                hashes_local = hashes
             else:
-                _input = str(input_cache)
+                hashes_local = _hashes
             
-            start_time = time.monotonic()
-            
-            with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
-                phash_bits = json.loads(meta.read())["phash"]["bits"]
-            
-            _input = os.path.join(_input, "__unit__")
-            
-            numOffile = 0
-            input: list[str] = [_input]
-            print(f"syncro in {', '.join(input)}...")
-            for folder in input:
-                for _ in Path(folder).rglob('*.json'):
-                    if _.is_file():
-                        numOffile += 1
-            
-            comparisons = []
+            _start_time = time.monotonic()
+            top_comparisons = []
             counter = itertools.count()
             
-            if not stream:
+            current_hash = hashes_local[i]
+            
+            current_path = current_hash["path"]
+            current_phash = imagehash.hex_to_hash(current_hash["phash"])
+            
+            # current_path, current_phash_hex = hashes_local[i]
+            # 
+            # current_phash = imagehash.hex_to_hash(current_phash_hex)
+            # 
+            # for j in range(i + 1, len(hashes_local)):
+            #     old_path, old_phash_hex = hashes_local[j]
+            # 
+            #     old_phash = imagehash.hex_to_hash(old_phash_hex)
+            # 
+            #     distance = current_phash - old_phash
+            
+            for old_hash in hashes_local[i + 1:]:
+                old_path = old_hash["path"]
+                old_phash = imagehash.hex_to_hash(old_hash["phash"])
                 
-                hashes: dict[str, ImageHash] = {}
+                distance = current_phash - old_phash
                 
-                pbar = tqdm(
-                    (file for folder in input for file in Path(folder).rglob('*.json')),
-                    total=numOffile,
-                    desc="duplicates",
-                    dynamic_ncols=True,
-                    smoothing=0.05,
-                    mininterval=0.5,
-                    miniters=1
+                comparison = {
+                    "path1": current_path,
+                    "path2": old_path,
+                    "distance": distance,
+                }
+                
+                heap_entry = (
+                    -distance,
+                    next(counter),
+                    comparison,
                 )
                 
-                for file in pbar:
-                    with open(file, "rb") as _f:
-                        _data = _f.read()
-                    data = jsonloadcache(_data)
-                    
-                    
-                    path = str(data["path"])
-                    phash: ImageHash = imagehash.hex_to_hash(data["phash"])
-                    
-                    for old_path, old_phash in hashes.items():
-                        
-                        _counter: int = next(counter)
-                        pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2))
-                        
-                        distance = phash - old_phash
-                        
-                        if phash_live:
-                            temp = _phash_live(phash_max_percent, phash_min_percent, percent = distance/phash_bits * 100)
-                            if temp[0]:
-                                tqdm.write(f"phash-live : {path} - {old_path} : {temp[1]}% diff")
-                        
-                        item = {
-                            "path1": old_path,
-                            "path2": path,
-                            "distance": distance,
-                        }
-                        
-                        entry = (-distance, _counter, item)
-                        
-                        if top_k > 0:
-                            if len(comparisons) < top_k:
-                                heapq.heappush(comparisons, entry)
-                            
-                            elif distance < -comparisons[0][0]:
-                                heapq.heapreplace(comparisons, entry)
-                    hashes[path] = phash
-            else:
+                if len(top_comparisons) < top_k:
+                    heapq.heappush(top_comparisons, heap_entry)
                 
-                pbar = tqdm(
-                    total=numOffile ** 2,
-                    desc="duplicates",
-                    dynamic_ncols=True,
-                    smoothing=0.05,
-                    mininterval=0.5,
-                    miniters=1
-                )
-                
-                def file_stream() -> Generator[str, None, None]:
-                    for folder in input:
-                        for file in Path(folder).rglob("*.json"):
-                            yield str(file)
-                
-                for file in file_stream():
-                    with open(file, "rb") as _f:
-                        _data = _f.read()
-                    data = jsonloadcache(_data)
-                    
-                    path = str(data["path"])
-                    phash = imagehash.hex_to_hash(data["phash"])
-                    
-                    for old_file in file_stream():
-                        pbar.update(1)
-                        if old_file == file:
-                            continue
-                        
-                        with open(old_file, "rb") as f:
-                            old_data_bin = f.read()
-                        old_data = jsonloadcache(old_data_bin)
-                        
-                        old_path = str(old_data["path"])
-                        old_phash = imagehash.hex_to_hash(old_data["phash"])
-                        
-                        distance = phash - old_phash
-                        
-                        if phash_live:
-                            temp = _phash_live(phash_max_percent, phash_min_percent, percent = distance/phash_bits * 100)
-                            if temp[0]:
-                                tqdm.write(f"phash-live : {path} - {old_path} : {temp[1]}% diff")
-                        
-                        item = {
-                            "path1": path,
-                            "path2": old_path,
-                            "distance": distance,
-                        }
-                        
-                        entry = (-distance, next(counter), item)
-                        
-                        if top_k > 0:
-                            if len(comparisons) < top_k:
-                                heapq.heappush(comparisons, entry)
-                            
-                            elif distance < -comparisons[0][0]:
-                                heapq.heapreplace(comparisons, entry)
-            pbar.close()
-            total_time = time.monotonic() - start_time
-            comparisons.sort(key=lambda x: x[2]["distance"])
-            Num0 = 0
-            Num25 = 0
-            Num50 = 0
-            Num75 = 0
-            for _, _, item in comparisons:
-                percent = item['distance']/phash_bits * 100
-                if percent <= 0:
-                    Num0 += 1
-                elif percent <= 25:
-                    Num25 += 1
-                elif percent <= 50:
-                    Num50 += 1
-                elif percent <= 75:
-                    Num75 += 1
-                print(
-                    f"k-top : {item['path1']} - {item['path2']} : {percent}% diff"
-                )
-            print("="*5 + " Summary " + "="*5)
-            print(f"  0% : {Num0}")
-            print(f"  25% : {Num25}")
-            print(f"  50% : {Num50}")
-            print(f"  75% : {Num75}")
-            print(f"total time (no index) : {total_time}")
-            print("="*19)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            del tmp
-    else:
-        if input_cache is None:
-            raise RuntimeError()
+                elif distance < -top_comparisons[0][0]:
+                    heapq.heapreplace(top_comparisons, heap_entry)
+            
+            results = []
+            
+            for _, _, comparison in top_comparisons:
+                results.append(comparison)
+            
+            return results
+            # out
+        
         with Multicore(
             func=_duplicates_command_worker,
-            core=2,
-            closeOnError=True, 
-            timeout=5
+            core=threads,
+            timeout=2,
+            worker_kwargs={
+                "_hashes": None if multiprocessing.get_start_method() == "fork" else hashes
+            },
+            
+            _dev=True
         ) as core:
-            liste = list(Path(input_cache).rglob('*.json'))
+            
+            final = []
+            counter = itertools.count()
+            
+            task = iter(range(len(hashes)))
+            
             pbar = tqdm(
-                liste,
-                total=len(liste),
+                total=len(hashes),
                 desc="duplicates",
                 dynamic_ncols=True,
                 smoothing=0.05,
                 mininterval=0.5,
                 miniters=1
             )
-
-def _duplicates_command_worker() -> None:
-    pass
+            
+            finished = 0
+            try:
+                while finished < len(hashes): # num != core_count
+                    pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2), refresh=False)
+                    
+                    core.put(i=next(task), top_k=top_k)
+                    pbar.update()
+                    
+                    for result in core.get():
+                        finished += 1
+                        for item in result:
+                            distance = item["distance"]
+                            entry = (
+                                -distance,
+                                next(counter),
+                                item
+                            )
+                            
+                            if len(final) < top_k:
+                                heapq.heappush(final, entry)
+                            
+                            elif distance < -final[0][0]:
+                                heapq.heapreplace(final, entry)
+                pbar.close()
+            except (KeyboardInterrupt, StopIteration): print("CTRL+C !")
+            final.sort(key=lambda x: x[2]["distance"])
+            
+            cat: dict[int, int] = {0:0, 25:0, 50:0, 75:0}
+            
+            for _, _, item in final:
+                percent = item['distance']/META["phash_bits"] * 100
+                for cat_percent in cat.copy():
+                    if percent <= cat_percent:
+                        cat[cat_percent] += 1
+                        break
+                
+                print(
+                    f"k-top : {item['path1']} - {item['path2']} : {percent}% diff"
+                )
+            
+            print("="*5 + " Summary " + "="*5)
+            for percent, number in cat.items():
+                print(f"   {percent}% : {number}")
+            print("="*19)
+    except Exception:  # noqa: TRY203
+        raise
+    finally:
+        print(time.monotonic() - start_time)
 
 def duplicates_command(args: argparse.Namespace) -> None:
     # args.top_k: int
@@ -488,15 +472,13 @@ def duplicates_command(args: argparse.Namespace) -> None:
         top_k=args.top_k,
         input=args.input,
         input_cache=args.input_cache,
-        output=args.output,
         verbose=args.verbose,
-        stream=args.stream,
         phash_live=args.phash_live,
         phash_max_percent=args.phash_max_percent,
         phash_min_percent=args.phash_min_percent,
         phash_bits=args.phash_bits,
         no_recursive=args.no_recursive,
-        experimental_multicore=args.experimental_multicore
+        threads=args.threads
     )
 
 
@@ -543,6 +525,12 @@ def main() -> None:
         help="K, M, G, T",
         type=str,
         default=None
+    )
+    parser.add_argument(
+        "--threads",
+        help="Num of threads.",
+        type=int,
+        default=os.cpu_count() or 1
     )
     subparsers = parser.add_subparsers(
         dest="command",
@@ -616,12 +604,6 @@ def main() -> None:
         "--no-recursive",
         action="store_true",
         help=_help_no_recursive
-    )
-    index_parser.add_argument(
-        "--threads",
-        help="Num of threads.",
-        type=int,
-        default=0
     )
     index_parser.add_argument(
         "--phash-bits",
@@ -700,18 +682,9 @@ def main() -> None:
         default=0
     )
     duplicates_parser.add_argument(
-        "--stream",
-        action="store_true",
-        help="Allows for O(k) memory usage at the cost of n(n - 1) comparisons; used on massive datasets."
-    )
-    duplicates_parser.add_argument(
         "--no-recursive",
         action="store_true",
         help="Requires `--input` to operate; " + _help_no_recursive
-    )
-    duplicates_parser.add_argument(
-        "--experimental-multicore",
-        action="store_true"
     )
     duplicates_parser.set_defaults(
         func=duplicates_command
