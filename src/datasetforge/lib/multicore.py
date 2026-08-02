@@ -10,6 +10,7 @@ from queue import Empty
 from queue import Empty as queue_Empty
 from typing import Any, Self
 
+import psutil
 from setproctitle import setproctitle
 
 
@@ -204,6 +205,25 @@ class Multicore:
         """trigger an error if one of the workers stops working."""
         if not self._status():
             raise errors.UnexpectedWorkerExitError()
+    
+    def _memory_usage(self, type: str) -> int:
+        total = 0
+        
+        for _ in self.workers:
+            pid = _.pid
+            if not pid is None:
+                try:
+                    total += getattr(psutil.Process(pid).memory_full_info(), type)
+                except psutil.NoSuchProcess:
+                    pass
+        return total
+    
+    def workers_memory_usage_rss(self) -> int:
+        return self._memory_usage("rss")
+    
+    def workers_memory_usage_uss(self) -> int:
+        return self._memory_usage("uss")
+
 
 
 if __name__ == "__main__":

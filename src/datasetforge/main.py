@@ -381,7 +381,7 @@ def _duplicates_command(
             
             return results
             # out
-        
+        #multiprocessing.set_start_method("spawn")
         with Multicore(
             func=_duplicates_command_worker,
             core=threads,
@@ -410,6 +410,9 @@ def _duplicates_command(
             finished = 0
             try:
                 while finished < len(hashes): # num != core_count
+                    if finished % (threads * 2) == 0:
+                        print(f'uss : {core.workers_memory_usage_uss() / (1024 * 1024):.4f}', "MiB")
+                        print(f'rss : {core.workers_memory_usage_rss() / (1024 * 1024):.4f}', "MiB")
                     pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2), refresh=False)
                     
                     core.put(i=next(task), top_k=top_k)
