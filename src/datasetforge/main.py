@@ -148,9 +148,12 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
             if _.is_file():
                 numOffile += 1
     
-    counterFiles = itertools.count()
+    #counterFiles = itertools.count()
     
-    with Multicore(func=_index_worker, core=threads or os.cpu_count() or 1, timeout=5) as core:
+    total: int = 0
+    TheCache = f"{os.path.join(base, "__cache__")}.jsonl"
+    
+    with open(TheCache, "wb") as f, Multicore(func=_index_worker, core=threads or os.cpu_count() or 1, timeout=5) as core:
         for file in tqdm(
             sourceGen(input, recursive=recursive),
             total=numOffile,
@@ -160,38 +163,34 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
             mininterval=0.5,
             miniters=1
         ):
-            core.put(
-                outJson=f"{os.path.join(base, str(next(counterFiles)))}.json",
-                file=file,
-                verbose=verbose,
-                hash_size=hash_size,
-                hash_func=hash_func
-            )
-            for _ in core.get():
-                pass
+            while numOffile < total:
+                core.put(
+                    outJson=f"{os.path.join(base, "__cache__")}.json",
+                    file=file,
+                    verbose=verbose,
+                    hash_size=hash_size,
+                    hash_func=hash_func
+                )
+                for _ in core.get():
+                    f.write(_ + b"\n")
+                    total += 1
+    sys.exit(0)
 
 # pyrefly: ignore [explicit-any]
-def _index_worker(outJson: str, file: str, verbose: bool, hash_size: int, hash_func: Callable[[bytes], Any]) -> None:
-    cctx = zstd.ZstdCompressor(level=1)
-    outJsonTemp = f"{outJson}.temp"
-    if not os.path.isfile(outJson):
-        with open(file, "rb") as infile:
-            if verbose:
-                tqdm.write(f"[ in  ] : path : '{file}', output : '{outJson}'")
-            
-            data: bytes = infile.read()
-            
-            with open(outJsonTemp, "wb") as f:
-                f.write(orjson.dumps(
-                    {
-                        "phash": str(phash_value(data, hash_size=hash_size)),
-                        "hash": hash_func(data).hexdigest(),
-                        "size": len(data),
-                        "path": str(Path(file).resolve())
-                    }
-                    )
-                )
-            os.replace(outJsonTemp, outJson)
+def _index_worker(file: str, verbose: bool, hash_size: int, hash_func: Callable[[bytes], Any]) -> bytes:
+    with open(file, "rb") as infile:
+        data: bytes = infile.read()
+        if verbose:
+            tqdm.write(f"[ in  ] : path : '{file}'")
+    
+    return orjson.dumps(
+                {
+                    "phash": str(phash_value(data, hash_size=hash_size)),
+                    "hash": hash_func(data).hexdigest(),
+                    "size": len(data),
+                    "path": str(Path(file).resolve())
+                }
+            )
 
 
 
