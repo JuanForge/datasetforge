@@ -17,6 +17,7 @@ from typing import Any
 import imagehash
 import orjson
 import psutil
+import zstandard as zstd
 from tqdm import tqdm
 
 from datasetforge import __version__
@@ -171,6 +172,7 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
 
 # pyrefly: ignore [explicit-any]
 def _index_worker(outJson: str, file: str, verbose: bool, hash_size: int, hash_func: Callable[[bytes], Any]) -> None:
+    cctx = zstd.ZstdCompressor(level=1)
     outJsonTemp = f"{outJson}.temp"
     if not os.path.isfile(outJson):
         with open(file, "rb") as infile:
@@ -297,12 +299,12 @@ def _duplicates_command(
         start_time = time.monotonic()
         
         META: dict[str, str | int] = {}
-        with open(os.path.join(_input, __version__, "META.json"), "r", encoding="utf-8") as meta:
+        with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
             META["phash_bits"] = json.loads(meta.read())["phash"]["bits"]
         
         _start_time = time.monotonic()
         print("syncro...", end='', flush=True)
-        liste: list[Path] = list(Path(os.path.join(_input, __version__, "__unit__")).rglob('*.json'))
+        liste: list[Path] = list(Path(os.path.join(_input, "__unit__")).rglob('*.json'))
         print(f"done | {time.monotonic() - _start_time}")
         
         hashes: list[dict[str, str]] = []
@@ -314,7 +316,8 @@ def _duplicates_command(
             hashes.append(
                 {
                     "path": str(data["path"]),
-                    "phash": str(data["phash"])
+                    "phash": imagehash.hex_to_hash(data["phash"])
+                    #"phash": str(data["phash"]) # dev
                 }
             )
         print(f"done | {time.monotonic() - _start_time}")
@@ -337,7 +340,8 @@ def _duplicates_command(
             current_hash = hashes_local[i]
             
             current_path = current_hash["path"]
-            current_phash = imagehash.hex_to_hash(current_hash["phash"])
+            # current_phash = imagehash.hex_to_hash(current_hash["phash"]) # dev
+            current_phash = current_hash["phash"]
             
             # current_path, current_phash_hex = hashes_local[i]
             # 
@@ -352,7 +356,8 @@ def _duplicates_command(
             
             for old_hash in hashes_local[i + 1:]:
                 old_path = old_hash["path"]
-                old_phash = imagehash.hex_to_hash(old_hash["phash"])
+                # old_phash = imagehash.hex_to_hash(old_hash["phash"]) # dev
+                old_phash = old_hash["phash"]
                 
                 distance = current_phash - old_phash
                 
@@ -388,15 +393,15 @@ def _duplicates_command(
             timeout=2,
             worker_kwargs={
                 "_hashes": None if multiprocessing.get_start_method() == "fork" else hashes
-            },
-            
-            _dev=True
+            }
         ) as core:
             
             final = []
             counter = itertools.count()
             
             task = iter(range(len(hashes)))
+            
+            numWorker = 1
             
             pbar = tqdm(
                 total=len(hashes),
@@ -406,13 +411,38 @@ def _duplicates_command(
                 mininterval=0.5,
                 miniters=1
             )
+            stats = tqdm(
+                total=0,
+                position=1,
+                bar_format="{desc}",
+                dynamic_ncols=True
+            )
+            
+            worker_bars = [
+                tqdm(
+                    total=0,
+                    position=i + numWorker + 1,
+                    bar_format="{desc}",
+                    leave=False
+                )
+                for i in range(threads)
+            ]
             
             finished = 0
             try:
                 while finished < len(hashes): # num != core_count
-                    if finished % (threads * 2) == 0:
-                        print(f'uss : {core.workers_memory_usage_uss() / (1024 * 1024):.4f}', "MiB")
-                        print(f'rss : {core.workers_memory_usage_rss() / (1024 * 1024):.4f}', "MiB")
+                    if finished % (threads * 5) == 0:
+                        stats.set_description_str(
+                            f'USS workers : {core.workers_memory_usage_uss() / (1024 * 1024):.4f} MiB | '
+                            f'USS main : {psutil.Process(os.getpid()).memory_full_info().uss / (1024 * 1024):.4f} MiB | '
+                            f'RSS main : {psutil.Process(os.getpid()).memory_full_info().rss / (1024 * 1024):.4f} MiB | '
+                            f'PSS+main : {core.workers_memory_usage_pss(include_main=True) / (1024 * 1024):.4f} MiB   | '
+                            f"Queue_input : {core._input_Queue.qsize()} | "
+                            f"Queue_output : {core._output_Queue.qsize()}"
+                        )
+                        for index, process in enumerate(core.get_workers()):
+                            worker_bars[index].set_description_str(f"[{index}] : {psutil.Process(process.pid).memory_full_info().uss / (1024 * 1024):.4f} MiB")
+                    
                     pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2), refresh=False)
                     
                     core.put(i=next(task), top_k=top_k)
@@ -435,6 +465,11 @@ def _duplicates_command(
                                 heapq.heapreplace(final, entry)
                 pbar.close()
             except (KeyboardInterrupt, StopIteration): print("CTRL+C !")
+            pbar.close()
+            stats.close()
+            for _ in worker_bars:
+                _.close()
+            
             final.sort(key=lambda x: x[2]["distance"])
             
             cat: dict[int, int] = {0:0, 25:0, 50:0, 75:0}

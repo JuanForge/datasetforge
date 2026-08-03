@@ -206,23 +206,38 @@ class Multicore:
         if not self._status():
             raise errors.UnexpectedWorkerExitError()
     
-    def _memory_usage(self, type: str) -> int:
+    def _memory_usage(self, type: str, include_main: bool = False) -> int:
         total = 0
+        pids: list[int | None] = []
         
         for _ in self.workers:
-            pid = _.pid
-            if not pid is None:
+            pids.append(_.pid)
+        
+        if include_main:
+            pids.append(os.getpid())
+        
+        for _ in pids:
+            if not _ is None:
                 try:
-                    total += getattr(psutil.Process(pid).memory_full_info(), type)
+                    if type in ["rss"]:
+                        total += getattr(psutil.Process(_).memory_info(), type)
+                    else:
+                        total += getattr(psutil.Process(_).memory_full_info(), type)
                 except psutil.NoSuchProcess:
                     pass
         return total
+    
+    def get_workers(self) -> list[Process]:
+        return self.workers
     
     def workers_memory_usage_rss(self) -> int:
         return self._memory_usage("rss")
     
     def workers_memory_usage_uss(self) -> int:
         return self._memory_usage("uss")
+
+    def workers_memory_usage_pss(self, include_main: bool = False) -> int:
+        return self._memory_usage("uss", include_main=include_main)
 
 
 
