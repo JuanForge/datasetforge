@@ -14,10 +14,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import humanize
 import imagehash
 import orjson
 import psutil
-import zstandard as zstd
+from imagehash import ImageHash
 from tqdm import tqdm
 
 from datasetforge import __version__
@@ -128,10 +129,11 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
             "--phash-bits must be a perfect square (64, 256, 1024, ...)"
     )
     
-    base = os.path.join(output, __version__, "__unit__")
+    base = os.path.join(output, "__unit__")
     os.makedirs(base, exist_ok=True)
     
-    with open(os.path.join(output, __version__, "META.json"), "w", encoding="utf-8") as meta:
+    with open(os.path.join(output, "META.json"), "w", encoding="utf-8") as meta:
+        # pyrefly: ignore [unused-call-result]
         meta.write(json.dumps(
             {
                 "phash": {
@@ -148,13 +150,10 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
             if _.is_file():
                 numOffile += 1
     
-    #counterFiles = itertools.count()
-    
     total: int = 0
     TheCache = f"{os.path.join(base, "__cache__")}.jsonl"
     
-    with open(TheCache, "wb") as f, Multicore(func=_index_worker, core=threads or os.cpu_count() or 1, timeout=5) as core:
-        for file in tqdm(
+    pbar = tqdm(
             sourceGen(input, recursive=recursive),
             total=numOffile,
             desc="index",
@@ -162,19 +161,24 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
             smoothing=0.05,
             mininterval=0.5,
             miniters=1
-        ):
-            while numOffile < total:
+    )
+    it = iter(pbar)
+    
+    with open(TheCache, "wb") as f, Multicore(func=_index_worker, core=threads or os.cpu_count() or 1, timeout=5) as core:
+        while total < numOffile:
+            try:
                 core.put(
-                    outJson=f"{os.path.join(base, "__cache__")}.json",
-                    file=file,
+                    file=next(it),
                     verbose=verbose,
                     hash_size=hash_size,
                     hash_func=hash_func
                 )
-                for _ in core.get():
+            except StopIteration: pass
+            
+            for _ in core.get():
+                if _:
                     f.write(_ + b"\n")
                     total += 1
-    sys.exit(0)
 
 # pyrefly: ignore [explicit-any]
 def _index_worker(file: str, verbose: bool, hash_size: int, hash_func: Callable[[bytes], Any]) -> bytes:
@@ -289,13 +293,11 @@ def _duplicates_command(
                 verbose=verbose,
                 threads=threads
             )
-            _input = os.path.join(tmp.name, __version__)
+            _input = tmp.name
         else:
             if input_cache is None:
                 raise RuntimeError(295)
             _input = input_cache
-        
-        start_time = time.monotonic()
         
         META: dict[str, str | int] = {}
         with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
@@ -303,30 +305,28 @@ def _duplicates_command(
         
         _start_time = time.monotonic()
         print("syncro...", end='', flush=True)
-        liste: list[Path] = list(Path(os.path.join(_input, "__unit__")).rglob('*.json'))
+        TheCache = []
+        with open(os.path.join(_input, "__unit__", "__cache__.jsonl"), "rb") as f:
+            for line in f:
+                TheCache.append(orjson.loads(line))
+        #liste: list[Path] = list(Path(os.path.join(_input, "__unit__")).rglob('*.json'))
         print(f"done | {time.monotonic() - _start_time}")
         
-        hashes: list[dict[str, str]] = []
+        hashes: list[dict[str, str | ImageHash]] = []
         
         _start_time = time.monotonic()
-        print(f"loading {len(liste)} cache file...", end='', flush=True)
-        for entry in liste:
-            data = jsonloadcache(open(entry, "rb").read())  # noqa: SIM115
+        print("loading cache file...", end='', flush=True)
+        for entry in TheCache:
             hashes.append(
                 {
-                    "path": str(data["path"]),
-                    "phash": imagehash.hex_to_hash(data["phash"])
-                    #"phash": str(data["phash"]) # dev
+                    "path": str(entry["path"]),
+                    "phash": imagehash.hex_to_hash(entry["phash"])
                 }
             )
         print(f"done | {time.monotonic() - _start_time}")
         
-        # for i in range(len(hashes)):
-        #     worker_id = i % core_count
-        #     tasks[worker_id].append(i)
-        
-        # in
-        def _duplicates_command_worker(i: int, top_k: int, _hashes: list[dict[str, str]] | None = None) -> list[dict[str, str | int]]:
+        def _duplicates_command_worker(i: list[int], top_k: int, phash_bits: int, phash_live: bool,
+                                        phash_min_percent: float, phash_max_percent: float, _hashes: list[dict[str, str | ImageHash]] | None = None) -> dict[str, int | str | list[Any]]:
             if _hashes is None:
                 hashes_local = hashes
             else:
@@ -336,62 +336,75 @@ def _duplicates_command(
             top_comparisons = []
             counter = itertools.count()
             
-            current_hash = hashes_local[i]
-            
-            current_path = current_hash["path"]
-            # current_phash = imagehash.hex_to_hash(current_hash["phash"]) # dev
-            current_phash = current_hash["phash"]
-            
-            # current_path, current_phash_hex = hashes_local[i]
-            # 
-            # current_phash = imagehash.hex_to_hash(current_phash_hex)
-            # 
-            # for j in range(i + 1, len(hashes_local)):
-            #     old_path, old_phash_hex = hashes_local[j]
-            # 
-            #     old_phash = imagehash.hex_to_hash(old_phash_hex)
-            # 
-            #     distance = current_phash - old_phash
-            
-            for old_hash in hashes_local[i + 1:]:
-                old_path = old_hash["path"]
-                # old_phash = imagehash.hex_to_hash(old_hash["phash"]) # dev
-                old_phash = old_hash["phash"]
+            for _i in i:
+                current_hash = hashes_local[_i]
                 
-                distance = current_phash - old_phash
+                current_path = current_hash["path"]
+                current_phash = current_hash["phash"]
                 
-                comparison = {
-                    "path1": current_path,
-                    "path2": old_path,
-                    "distance": distance,
-                }
+                # current_path, current_phash_hex = hashes_local[i]
+                # 
+                # current_phash = imagehash.hex_to_hash(current_phash_hex)
+                # 
+                # for j in range(i + 1, len(hashes_local)):
+                #     old_path, old_phash_hex = hashes_local[j]
+                # 
+                #     old_phash = imagehash.hex_to_hash(old_phash_hex)
+                # 
+                #     distance = current_phash - old_phash
                 
-                heap_entry = (
-                    -distance,
-                    next(counter),
-                    comparison,
-                )
-                
-                if len(top_comparisons) < top_k:
-                    heapq.heappush(top_comparisons, heap_entry)
-                
-                elif distance < -top_comparisons[0][0]:
-                    heapq.heapreplace(top_comparisons, heap_entry)
+                for old_hash in hashes_local[_i + 1:]:
+                    old_path = old_hash["path"]
+                    # old_phash = imagehash.hex_to_hash(old_hash["phash"]) # dev
+                    old_phash = old_hash["phash"]
+                    
+                    distance = current_phash - old_phash
+                    
+                    if phash_live:
+                        percent = distance / phash_bits * 100
+                        if percent <= phash_max_percent and percent >= phash_min_percent:
+                            return {"type": 0, "write": f"phash-live : {old_path} - {current_path} : {percent}"}
+                    
+                    comparison = {
+                        "path1": current_path,
+                        "path2": old_path,
+                        "distance": distance,
+                    }
+                    
+                    heap_entry = (
+                        -distance,
+                        next(counter),
+                        comparison,
+                    )
+                    
+                    if top_k:
+                        if len(top_comparisons) < top_k:
+                            heapq.heappush(top_comparisons, heap_entry)
+                        
+                        elif distance < -top_comparisons[0][0]:
+                            heapq.heapreplace(top_comparisons, heap_entry)
             
             results = []
             
             for _, _, comparison in top_comparisons:
                 results.append(comparison)
             
-            return results
-            # out
+            return {"type": 1, "results": results}
+        
         #multiprocessing.set_start_method("spawn")
+        start_time_task = time.monotonic()
         with Multicore(
             func=_duplicates_command_worker,
             core=threads,
             timeout=2,
+            _dev=True,
             worker_kwargs={
-                "_hashes": None if multiprocessing.get_start_method() == "fork" else hashes
+                "_hashes": None if multiprocessing.get_start_method() == "fork" else hashes,
+                "top_k": top_k,
+                "phash_bits": META["phash_bits"],
+                "phash_live": phash_live,
+                "phash_min_percent": phash_min_percent,
+                "phash_max_percent": phash_max_percent
             }
         ) as core:
             
@@ -416,54 +429,109 @@ def _duplicates_command(
                 bar_format="{desc}",
                 dynamic_ncols=True
             )
+            stats_time = 0.0
             
             worker_bars = [
                 tqdm(
                     total=0,
                     position=i + numWorker + 1,
-                    bar_format="{desc}",
-                    leave=False
+                    bar_format="{desc}"
                 )
                 for i in range(threads)
             ]
             
             finished = 0
+            timeout_get: float | None = None
             try:
-                while finished < len(hashes): # num != core_count
-                    if finished % (threads * 5) == 0:
+                estimate_chunk = 1
+                process_main = psutil.Process(os.getpid())
+                process_main.cpu_percent()
+                # cpu_percent_timer = time.monotonic()
+                total = len(hashes)
+                while finished < total: # num != core_count
+                    
+                    # remaining = len(hashes) - finished
+                    # estimate_chunk = max(
+                    #     1,
+                    #     int(
+                    #         remaining
+                    #         / (threads * 4)
+                    #         * math.sqrt(max(top_k, 1) / 100)
+                    #     )
+                    # )
+                    
+                    # if (time.monotonic() - cpu_percent_timer ) > 2:
+                    #     cpu_percent = process_main.cpu_percent()
+                    #     if cpu_percent > 10:
+                    #         estimate_chunk += min(max(1, int(cpu_percent / 10)), 5)
+                    #     else:
+                    #         estimate_chunk -= 1
+                    #     
+                    #     estimate_chunk = max(1, estimate_chunk)
+                    #     cpu_percent_timer = time.monotonic()
+                    force = 7
+                    estimate_chunk = max(
+                        1,
+                        int((top_k / 50) / (max(1, finished / total * 100) / force)))
+                    
+                    if (time.monotonic() - stats_time) >= 2:
                         stats.set_description_str(
                             f'USS workers : {core.workers_memory_usage_uss() / (1024 * 1024):.4f} MiB | '
                             f'USS main : {psutil.Process(os.getpid()).memory_full_info().uss / (1024 * 1024):.4f} MiB | '
                             f'RSS main : {psutil.Process(os.getpid()).memory_full_info().rss / (1024 * 1024):.4f} MiB | '
                             f'PSS+main : {core.workers_memory_usage_pss(include_main=True) / (1024 * 1024):.4f} MiB   | '
                             f"Queue_input : {core._input_Queue.qsize()} | "
-                            f"Queue_output : {core._output_Queue.qsize()}"
+                            f"Queue_output : {core._output_Queue.qsize()} | "
+                            f"estimate chunk : {estimate_chunk} | "
+                            f"CPU percent : {process_main.cpu_percent()} | "
+                            f"remaining tasks : {'no' if bool(timeout_get) else 'yes'}"
                         )
                         for index, process in enumerate(core.get_workers()):
-                            worker_bars[index].set_description_str(f"[{index}] : {psutil.Process(process.pid).memory_full_info().uss / (1024 * 1024):.4f} MiB")
+                            memory = psutil.Process(process.pid).memory_full_info()
+                            hu = humanize.naturalsize
+                            worker_bars[index].set_description_str(f"[{index}] : USS {hu(memory.uss, binary=True)} | RSS {hu(memory.rss, binary=True)}")
+                        stats_time = time.monotonic()
                     
                     pbar.set_postfix(memory_rss=_getMemoryAlloc(interval=2), refresh=False)
                     
-                    core.put(i=next(task), top_k=top_k)
-                    pbar.update()
                     
-                    for result in core.get():
+                    chunk: list[int] = []
+                    try:
+                        for _ in range(estimate_chunk):
+                            chunk.append(next(task))
+                    except StopIteration:
+                        timeout_get = 0.5
+                    
+                    if len(chunk) >= 1:
+                        core.put(i=chunk)
+                        if len(chunk) > 1:
+                            total -= (len(chunk) - 1)
+                    pbar.total = total
+                    
+                    for result in core.get(timeout=timeout_get):
+                        pbar.update()
                         finished += 1
-                        for item in result:
-                            distance = item["distance"]
-                            entry = (
-                                -distance,
-                                next(counter),
-                                item
-                            )
-                            
-                            if len(final) < top_k:
-                                heapq.heappush(final, entry)
-                            
-                            elif distance < -final[0][0]:
-                                heapq.heapreplace(final, entry)
+                        if result["type"] == 1:
+                            for item in result["results"]:
+                                distance = item["distance"]
+                                entry = (
+                                    -distance,
+                                    next(counter),
+                                    item
+                                )
+                                
+                                if len(final) < top_k:
+                                    heapq.heappush(final, entry)
+                                
+                                elif distance < -final[0][0]:
+                                    heapq.heapreplace(final, entry)
+                        elif result["type"] == 0:
+                            tqdm.write(result["write"])
+                        else:
+                            raise RuntimeError()
                 pbar.close()
-            except (KeyboardInterrupt, StopIteration): print("CTRL+C !")
+                tqdm.write("exit")
+            except (KeyboardInterrupt, StopIteration): pass
             pbar.close()
             stats.close()
             for _ in worker_bars:
@@ -471,7 +539,9 @@ def _duplicates_command(
             
             final.sort(key=lambda x: x[2]["distance"])
             
-            cat: dict[int, int] = {0:0, 25:0, 50:0, 75:0}
+            cat: dict[int, int]  = {}
+            for _ in range(0, 100, 10):
+                cat[_] = 0
             
             for _, _, item in final:
                 percent = item['distance']/META["phash_bits"] * 100
@@ -491,7 +561,7 @@ def _duplicates_command(
     except Exception:  # noqa: TRY203
         raise
     finally:
-        print(time.monotonic() - start_time)
+        print(time.monotonic() - start_time_task)
 
 def duplicates_command(args: argparse.Namespace) -> None:
     # args.top_k: int

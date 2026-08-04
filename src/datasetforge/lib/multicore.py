@@ -6,8 +6,8 @@ import traceback
 from collections.abc import Callable, Generator
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Queue as QueueType
-from queue import Empty
 from queue import Empty as queue_Empty
+from queue import Full as queue_Full
 from typing import Any, Self
 
 import psutil
@@ -67,7 +67,7 @@ def _clear_queue(queue: QueueType[Any]) -> None:
     while True:
         try:
             queue.get_nowait()
-        except Empty:
+        except queue_Empty:
             break
 
 class Multicore:
@@ -89,14 +89,17 @@ class Multicore:
     ) -> None:
         core = core or os.cpu_count() or 1
         # pyrefly: ignore [explicit-any]
-        self._input_Queue: QueueType[dict[Any, Any] | None] = Queue(maxsize=input_Queue or core)
+        self._input_Queue: QueueType[dict[Any, Any] | None] = Queue(maxsize=input_Queue or (int(core * 1.5)))
         # pyrefly: ignore [explicit-any]
         self._output_Queue: QueueType[dict[Any, Any]] = Queue()
         self.func = func
         
         if worker_kwargs is None:
             worker_kwargs = {}
+        
         self.workers: list[Process] = []
+        
+        _timeloadworkers = time.monotonic()
         for _ in range(core):
             p = Process(
                 target=_worker,
@@ -110,6 +113,8 @@ class Multicore:
             )
             p.start()
             self.workers.append(p)
+        self._timeloadworkers = time.monotonic() - _timeloadworkers
+        
         self.closed: bool = False
         self.closeOnError = closeOnError
         self.timeout = timeout
@@ -144,13 +149,15 @@ class Multicore:
         })
     
     # pyrefly: ignore [explicit-any]
-    def get(self, block: bool = False, _status: bool = True) -> list[Any]:
+    def get(self, block: bool = False, timeout: float|None = None, _status: bool = True) -> list[Any]:
         # pyrefly: ignore [explicit-any]
         out: list[Any] = []
         if _status: self.status()
+        if type(timeout) in [float, int]:
+            block = True
         while True:
             try:
-                data = self._output_Queue.get(block=block)
+                data = self._output_Queue.get(block=block, timeout=timeout)
             except queue_Empty:
                 break
             
@@ -167,7 +174,9 @@ class Multicore:
         if not self.closed:
             start_time = time.monotonic()
             for _ in self.workers:
-                self._input_Queue.put(None)
+                try:
+                    self._input_Queue.put(None, block=False)
+                except queue_Full: pass
             
             #for _ in [self._input_Queue, self._output_Queue]:
             #    _clear_queue(_)
@@ -180,11 +189,12 @@ class Multicore:
             
             for worker in self.workers:
                 if worker.is_alive():
-                    print("kill !")
+                    if self._dev: print("kill !")
                     worker.kill()
                 worker.join()
             
             self._close_Queue([self._input_Queue, self._output_Queue])
+            if self._dev: print(f"[Multicore] : time to make the workers : {self._timeloadworkers:.8f}")
     
     # pyrefly: ignore [explicit-any]
     def _close_Queue(self, i: list[QueueType[Any]]) -> None:

@@ -20,6 +20,7 @@ def benchmark() -> None:
             results.append((algo, _total))
             _max_len_name = max(_max_len_name, len(algo))
         
+        # pyrefly: ignore [implicit-any-lambda]
         results.sort(key=lambda x: x[1])
         for index, (algo, ttime) in enumerate(results):
             print(f"[#{index}] : [{algo.ljust(_max_len_name)}] : {ttime:.16f}s | {(_size_memory / ttime / (1024**3)):.2f} GiB/s")

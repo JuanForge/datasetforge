@@ -109,6 +109,9 @@ datasetforge duplicates --phash-bits 262144
 
 Specifies one or more dataset directories. Indexes are generated automatically, making this suitable for small datasets where pre-indexing is unnecessary.
 
+# Python
+### Developed with Python 3.12.3
+
 # WARNING
 > [!WARNING]
 > **Experimental Project**
