@@ -539,7 +539,7 @@ def _duplicates_command(
             for _ in worker_bars:
                 _.close()
             
-            final.sort(key=lambda x: x[2]["distance"])
+            final.sort(key=lambda x: x[2]["distance"], reverse=True)
             
             cat: dict[int, int]  = {}
             for _ in range(0, 100, 10):
