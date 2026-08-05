@@ -407,6 +407,8 @@ def _duplicates_command(
                 "phash_max_percent": phash_max_percent
             }
         ) as core:
+            # tqdm.write(str(core.workers[0].pid))
+            # time.sleep(10)
             
             final = []
             counter = itertools.count()
