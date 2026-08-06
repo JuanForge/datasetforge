@@ -19,9 +19,10 @@ import imagehash
 import orjson
 import psutil
 from imagehash import ImageHash
+from send2trash import send2trash
 from tqdm import tqdm
 
-from datasetforge import __version__
+from datasetforge import __version__  # noqa: F401
 from datasetforge.lib.benchmark import benchmark
 from datasetforge.lib.build_dataset import RenameMode
 from datasetforge.lib.build_dataset import main as lib_build_dataset_main
@@ -259,25 +260,38 @@ def _duplicates_command(
     input_cache: str | None,
     verbose: bool,
     phash_live: bool,
-    phash_max_percent: float,
+    phash_max_percent: float | None,
     phash_min_percent: float,
     phash_bits: int,
     no_recursive: bool,
-    threads: int = os.cpu_count() or 1
+    allow_rm: bool,
+    rm_allowed_dirs: list[str] | list[Path] | None,
+    threads: int = os.cpu_count() or 1,
 ) -> None:
-    tmp = None
+    if not rm_allowed_dirs is None:
+        _rm_allowed_dirs: list[Path] = []
+        for _ in rm_allowed_dirs:
+            if isinstance(_, Path):
+                _rm_allowed_dirs.append(_)
+            else:
+                _rm_allowed_dirs.append(Path(_))
+        rm_allowed_dirs = _rm_allowed_dirs
+    
     try:
         if bool(input) == bool(input_cache):
             raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
         
-        if phash_max_percent == 0.0 and phash_live:
+        if (not phash_max_percent ) is None and phash_live:
             raise RuntimeError("--phash-live defined without --phash-max-percent")
         
         if (not phash_live) and phash_max_percent != 0.0:
             raise RuntimeError("--phash-max-percent defined without --phash-live")
         
         if no_recursive and (not input):
-            raise RuntimeError("--no--recursive requires --input")
+            raise RuntimeError("--no-recursive requires --input")
+        
+        if rm_allowed_dirs and len(rm_allowed_dirs) >= 1 and (not allow_rm):
+            raise RuntimeError("--rm-allowed-dirs requires --allow-rm.")
         
         
         if input:
@@ -326,7 +340,22 @@ def _duplicates_command(
         print(f"done | {time.monotonic() - _start_time}")
         
         def _duplicates_command_worker(i: list[int], top_k: int, phash_bits: int, phash_live: bool,
-                                        phash_min_percent: float, phash_max_percent: float, _hashes: list[dict[str, str | ImageHash]] | None = None) -> dict[str, int | str | list[Any]]:
+                                        phash_min_percent: float, phash_max_percent: float,
+                                        allow_rm: bool, rm_allowed_dirs: list[Path] | None,
+                                        _hashes: list[dict[str, str | ImageHash]] | None = None
+            ) -> dict[str, int | str | list[Any]]:
+            # dev : start
+            removed_files: set[Path] = set()
+            
+            def test_remove(path: Path):
+                path = path.resolve()
+            
+                if path in removed_files:
+                    tqdm.write(f"DOUBLE SUPPRESSION : {path}")
+                else:
+                    removed_files.add(path)
+                    tqdm.write(f"SUPPRESSION : {path}")
+            # dev : end
             if _hashes is None:
                 hashes_local = hashes
             else:
@@ -339,7 +368,7 @@ def _duplicates_command(
             for _i in i:
                 current_hash = hashes_local[_i]
                 
-                current_path = current_hash["path"]
+                current_path = str(current_hash["path"])
                 current_phash = current_hash["phash"]
                 
                 # current_path, current_phash_hex = hashes_local[i]
@@ -354,16 +383,35 @@ def _duplicates_command(
                 #     distance = current_phash - old_phash
                 
                 for old_hash in hashes_local[_i + 1:]:
-                    old_path = old_hash["path"]
+                    # pyrefly: ignore [bad-assignment]
+                    old_path: str = old_hash["path"]
                     # old_phash = imagehash.hex_to_hash(old_hash["phash"]) # dev
-                    old_phash = old_hash["phash"]
+                    # pyrefly: ignore [bad-assignment]
+                    old_phash: ImageHash = old_hash["phash"]
                     
+                    # pyrefly: ignore [unsupported-operation]
                     distance = current_phash - old_phash
                     
                     if phash_live:
                         percent = distance / phash_bits * 100
                         if percent <= phash_max_percent and percent >= phash_min_percent:
-                            return {"type": 0, "write": f"phash-live : {old_path} - {current_path} : {percent}"}
+                            trace: list[str] = []
+                            if allow_rm and rm_allowed_dirs and len(rm_allowed_dirs) >= 1:
+                                for permit_folder in rm_allowed_dirs:
+                                    if Path(old_path).resolve().is_relative_to(permit_folder.resolve()):
+                                        rm_file = old_path
+                                    elif Path(current_path).resolve().is_relative_to(permit_folder.resolve()):
+                                        rm_file = current_path
+                                    else:
+                                        rm_file = None
+                                    if rm_file:
+                                        rm_file = Path(rm_file)
+                                        trace.append(f"\033[32mfound : {old_path} = {current_path}\033[0m")
+                                        trace.append(f"valid rm : {rm_file}")
+                                        test_remove(rm_file)
+                                        break
+                            
+                            return {"type": 0, "write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": trace}
                     
                     comparison = {
                         "path1": current_path,
@@ -404,7 +452,9 @@ def _duplicates_command(
                 "phash_bits": META["phash_bits"],
                 "phash_live": phash_live,
                 "phash_min_percent": phash_min_percent,
-                "phash_max_percent": phash_max_percent
+                "phash_max_percent": phash_max_percent,
+                "allow_rm": allow_rm, 
+                "rm_allowed_dirs": rm_allowed_dirs
             }
         ) as core:
             # tqdm.write(str(core.workers[0].pid))
@@ -529,6 +579,9 @@ def _duplicates_command(
                                     heapq.heapreplace(final, entry)
                         elif result["type"] == 0:
                             tqdm.write(result["write"])
+                            if result["trace"]:
+                                for _trace in result["trace"]:
+                                    tqdm.write(str(_trace) + "\n")
                         else:
                             raise RuntimeError()
                 pbar.close()
@@ -539,6 +592,7 @@ def _duplicates_command(
             for _ in worker_bars:
                 _.close()
             
+            # pyrefly: ignore [implicit-any-lambda]
             final.sort(key=lambda x: x[2]["distance"], reverse=True)
             
             cat: dict[int, int]  = {}
@@ -587,7 +641,9 @@ def duplicates_command(args: argparse.Namespace) -> None:
         phash_min_percent=args.phash_min_percent,
         phash_bits=args.phash_bits,
         no_recursive=args.no_recursive,
-        threads=args.threads
+        threads=args.threads,
+        allow_rm=args.allow_rm,
+        rm_allowed_dirs=args.rm_allowed_dirs
     )
 
 
@@ -768,7 +824,7 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--phash-max-percent",
         type=float,
-        default=0.0,
+        default=None,
         help=(
             "Maximum pHash difference percentage to display. Must be used together "
             "with --phash-live. Displays every file pair with a pHash difference "
@@ -794,6 +850,16 @@ def main() -> None:
         "--no-recursive",
         action="store_true",
         help="Requires `--input` to operate; " + _help_no_recursive
+    )
+    duplicates_parser.add_argument(
+        "--allow-rm",
+        action="store_true",
+        help="Authorizes deletion actions"
+    )
+    duplicates_parser.add_argument(
+        "--rm-allowed-dirs",
+        nargs="+",
+        help="Folder(s) with delete permission."
     )
     duplicates_parser.set_defaults(
         func=duplicates_command

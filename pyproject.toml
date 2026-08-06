@@ -22,7 +22,8 @@ dependencies = [
     "psutil",
     "xxhash",
     "humanize",
-    "blake3"
+    "blake3",
+    "send2trash"
 ]
 
 [project.scripts]
