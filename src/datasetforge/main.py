@@ -344,18 +344,8 @@ def _duplicates_command(
                                         allow_rm: bool, rm_allowed_dirs: list[Path] | None,
                                         _hashes: list[dict[str, str | ImageHash]] | None = None
             ) -> dict[str, int | str | list[Any]]:
-            # dev : start
-            removed_files: set[Path] = set()
-            
-            def test_remove(path: Path):
-                path = path.resolve()
-            
-                if path in removed_files:
-                    tqdm.write(f"DOUBLE SUPPRESSION : {path}")
-                else:
-                    removed_files.add(path)
-                    tqdm.write(f"SUPPRESSION : {path}")
-            # dev : end
+            phash_live_trace: list[str] = []
+            phash_live_return: list[dict[str, int | str | list[str]]] = []
             if _hashes is None:
                 hashes_local = hashes
             else:
@@ -395,7 +385,7 @@ def _duplicates_command(
                     if phash_live:
                         percent = distance / phash_bits * 100
                         if percent <= phash_max_percent and percent >= phash_min_percent:
-                            trace: list[str] = []
+                            #trace: list[str] = []
                             if allow_rm and rm_allowed_dirs and len(rm_allowed_dirs) >= 1:
                                 for permit_folder in rm_allowed_dirs:
                                     if Path(old_path).resolve().is_relative_to(permit_folder.resolve()):
@@ -406,12 +396,17 @@ def _duplicates_command(
                                         rm_file = None
                                     if rm_file:
                                         rm_file = Path(rm_file)
-                                        trace.append(f"\033[32mfound : {old_path} = {current_path}\033[0m")
-                                        trace.append(f"valid rm : {rm_file}")
-                                        test_remove(rm_file)
+                                        phash_live_trace.append(f"\033[32mfound : {old_path} = {current_path}\033[0m")
+                                        phash_live_trace.append(f"valid rm : {rm_file}")
+                                        # pyrefly: ignore [unnecessary-comparison]
+                                        if True is False:  # noqa: PLR0133
+                                            try:
+                                                send2trash(rm_file)
+                                            except FileNotFoundError:
+                                                phash_live_trace.append(f"FileNotFoundError : {rm_file}")
                                         break
-                            
-                            return {"type": 0, "write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": trace}
+                            phash_live_return.append({"write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": phash_live_trace})
+                            #return {"type": 0, "write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": trace} # ne pas faire ruturn car casse dès i > 1, faire une liste de result puis resuilt final type list[]; exploité phash_live_list
                     
                     comparison = {
                         "path1": current_path,
@@ -431,7 +426,8 @@ def _duplicates_command(
                         
                         elif distance < -top_comparisons[0][0]:
                             heapq.heapreplace(top_comparisons, heap_entry)
-            
+            if phash_live:
+                return {"type": 0, "results": phash_live_return}
             results = []
             
             for _, _, comparison in top_comparisons:
@@ -500,6 +496,8 @@ def _duplicates_command(
                 process_main.cpu_percent()
                 # cpu_percent_timer = time.monotonic()
                 total = len(hashes)
+                locked_total = total
+                _debug_int = 0
                 while finished < total: # num != core_count
                     
                     # remaining = len(hashes) - finished
@@ -522,9 +520,13 @@ def _duplicates_command(
                     #     estimate_chunk = max(1, estimate_chunk)
                     #     cpu_percent_timer = time.monotonic()
                     force = 7
-                    estimate_chunk = max(
-                        1,
-                        int((top_k / 50) / (max(1, finished / total * 100) / force)))
+                    if top_k:
+                        estimate_chunk = max(
+                            1,
+                            int((top_k / 50) / (max(1, finished / total * 100) / force)))
+                    elif phash_live:
+                        estimate_chunk = int(max(1, (100 - (finished / total) * 100) )) # 100 % - 0%
+                        estimate_chunk = int(max(1, estimate_chunk / (locked_total / 2000)))
                     
                     if (time.monotonic() - stats_time) >= 2:
                         stats.set_description_str(
@@ -534,8 +536,8 @@ def _duplicates_command(
                             f'PSS+main : {core.workers_memory_usage_pss(include_main=True) / (1024 * 1024):.4f} MiB   | '
                             f"Queue_input : {core._input_Queue.qsize()} | "
                             f"Queue_output : {core._output_Queue.qsize()} | "
-                            f"estimate chunk : {estimate_chunk} | "
-                            f"CPU percent : {process_main.cpu_percent()} | "
+                            f"chunk : {estimate_chunk} | "
+                            f"CPU : {process_main.cpu_percent()} % | "
                             f"remaining tasks : {'no' if bool(timeout_get) else 'yes'}"
                         )
                         for index, process in enumerate(core.get_workers()):
@@ -578,10 +580,15 @@ def _duplicates_command(
                                 elif distance < -final[0][0]:
                                     heapq.heapreplace(final, entry)
                         elif result["type"] == 0:
-                            tqdm.write(result["write"])
-                            if result["trace"]:
-                                for _trace in result["trace"]:
-                                    tqdm.write(str(_trace) + "\n")
+                            for _result in result["results"]:
+                                tqdm.write(_result["write"])
+                                for _trace in _result["trace"]:
+                                    tqdm.write(_trace)
+                                #tqdm.write(_result["trace"])
+                                _debug_int += 1
+                            #if result["trace"]:
+                            #    for _trace in result["trace"]:
+                            #        tqdm.write(str(_trace) + "\n")
                         else:
                             raise RuntimeError()
                 pbar.close()
@@ -618,6 +625,7 @@ def _duplicates_command(
         raise
     finally:
         print(time.monotonic() - start_time_task)
+        print(f"_debug_int : {_debug_int}")
 
 def duplicates_command(args: argparse.Namespace) -> None:
     # args.top_k: int
