@@ -397,7 +397,7 @@ def _duplicates_command(
                                     if rm_file:
                                         rm_file = Path(rm_file)
                                         phash_live_trace.append(f"\033[32mfound : {old_path} = {current_path}\033[0m")
-                                        phash_live_trace.append(f"valid rm : {rm_file}")
+                                        phash_live_trace.append(f"\033[32mvalid rm : {rm_file}\033[0m")
                                         # pyrefly: ignore [unnecessary-comparison]
                                         if True is False:  # noqa: PLR0133
                                             try:
@@ -584,7 +584,6 @@ def _duplicates_command(
                                 tqdm.write(_result["write"])
                                 for _trace in _result["trace"]:
                                     tqdm.write(_trace)
-                                #tqdm.write(_result["trace"])
                                 _debug_int += 1
                             #if result["trace"]:
                             #    for _trace in result["trace"]:
