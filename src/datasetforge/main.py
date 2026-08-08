@@ -1,5 +1,5 @@
-import hashlib
 import argparse
+import hashlib
 import heapq
 import itertools
 import json
@@ -188,8 +188,9 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
 
 # pyrefly: ignore [explicit-any]
 def _index_worker(file: str, verbose: bool, hash_size: int, hash_func: Callable[[bytes], Any], output: str) -> str:
+    st_mtime_ns = Path(file).stat().st_mtime_ns
     out_file = os.path.join(output, file.lstrip("/"))
-    out_file_json = f"{out_file}.json"
+    out_file_json = f"{out_file}-{st_mtime_ns}.json"
     
     if not os.path.isfile(out_file_json):
         with open(file, "rb") as f:
@@ -209,8 +210,6 @@ def _index_worker(file: str, verbose: bool, hash_size: int, hash_func: Callable[
                     }
                 ))
     return out_file_json
-
-
 
 def index_command(args: argparse.Namespace) -> None:
     # args.input: list[str]
@@ -233,6 +232,7 @@ def index_command(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         return
 
+"""
 def jsonloadcache(x: bytes) -> dict[str, str | int]:
     data = orjson.loads(x)
     return {
@@ -241,7 +241,8 @@ def jsonloadcache(x: bytes) -> dict[str, str | int]:
         "hash":    data["hash"],
         "size":    data["size"]
     }
-
+"""
+"""
 def _phash_live(phash_max_percent: float, phash_min_percent: float, percent: float) -> list[bool | float | int]:
     if percent > 100 or percent < 0:
         raise RuntimeError(f"panic, percent is {percent}")
@@ -250,28 +251,14 @@ def _phash_live(phash_max_percent: float, phash_min_percent: float, percent: flo
         return [True, percent]
     
     return [False, 0]
-
-
-    # args.top_k: int
-    # args.phash: bool
-    # args.input: list[str] | None
-    # args.input_cache: str | None
-    # args.output: str
-    # args.verbose: bool
-    # args.steam: bool
-    # args.phash_live: bool
-    # args.phash_max_percent: float - default == 0.0
-    # args.phash_min_percent: float - default == 0.0
-    # args.phash_bits: int
-    # args.no_recursive: bool
-
-
+"""
 
 def _duplicates_command(
     top_k: int,
     input: list[str],
     verbose: bool,
     phash_live: bool,
+    phash_low_log: bool,
     phash_max_percent: float | None,
     phash_min_percent: float,
     phash_bits: int,
@@ -324,17 +311,17 @@ def _duplicates_command(
         _input = tmp.name
         
         META: dict[str, str | int] = {}
-        with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
+        with open(os.path.join(_input, "META.json"), "rb", encoding="utf-8") as meta:
             META["phash_bits"] = json.loads(meta.read())["phash"]["bits"]
         
-        _start_time = time.monotonic()
-        print("syncro...", end='', flush=True)
+        # _start_time = time.monotonic()
+        # print("syncro...", end='', flush=True)
         # TheCache = []
         # with open(os.path.join(_input, "__unit__", "__cache__.jsonl"), "rb") as f:
         #     for line in f:
         #         TheCache.append(orjson.loads(line))
         #liste: list[Path] = list(Path(os.path.join(_input, "__unit__")).rglob('*.json'))
-        print(f"done | {time.monotonic() - _start_time}")
+        #  print(f"done | {time.monotonic() - _start_time}")
         
         hashes: list[dict[str, str | ImageHash]] = []
         
@@ -362,7 +349,9 @@ def _duplicates_command(
         """
         
         def _duplicates_command_worker(
-            i: list[int], top_k: int, phash_bits: int, phash_live: bool,
+            i: list[int],
+            phash_low_log: bool,
+            top_k: int, phash_bits: int, phash_live: bool,
                                         phash_min_percent: float, phash_max_percent: float,
                                         allow_rm: bool, rm_allowed_dirs: list[Path] | None,
                                         _hashes: list[dict[str, str | ImageHash]] | None = None
@@ -410,31 +399,36 @@ def _duplicates_command(
                     if phash_live:
                         percent = distance / phash_bits * 100
                         if percent <= phash_max_percent and percent >= phash_min_percent:
-                            #trace: list[str] = []
                             if allow_rm and rm_allowed_dirs and len(rm_allowed_dirs) >= 1:
                                 for permit_folder in rm_allowed_dirs:
-                                    if Path(old_path).resolve().is_relative_to(permit_folder.resolve()):
+                                    
+                                    old_path_obj = Path(old_path)
+                                    current_path_obj = Path(current_path)
+                                    
+                                    if old_path_obj.resolve().is_relative_to(permit_folder.resolve()):
                                         rm_file = old_path
-                                    elif Path(current_path).resolve().is_relative_to(permit_folder.resolve()):
+                                    elif current_path_obj.resolve().is_relative_to(permit_folder.resolve()):
                                         rm_file = current_path
                                     else:
                                         rm_file = None
                                     if rm_file:
                                         rm_file = Path(rm_file)
-                                        phash_live_trace.append(f"\033[32mfound : {old_path} = {current_path}\033[0m")
-                                        phash_live_trace.append(f"\033[32mvalid rm : {rm_file}\033[0m")
+                                        if not phash_low_log:
+                                            phash_live_trace.append(f"\033[32mfound : {old_path} = {current_path}\033[0m")
+                                            phash_live_trace.append(f"\033[32mvalid rm : {rm_file}\033[0m")
                                         # pyrefly: ignore [unnecessary-comparison]
                                         if True is False:  # noqa: PLR0133
                                             try:
                                                 send2trash(rm_file)
                                             except FileNotFoundError:
-                                                phash_live_trace.append(f"FileNotFoundError : {rm_file}")
+                                                if not phash_low_log:
+                                                    phash_live_trace.append(f"FileNotFoundError : {rm_file}")
                                         break
-                            phash_live_return.append(
-                                {"write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": phash_live_trace}
-                            )
+                            if not phash_low_log:
+                                phash_live_return.append(
+                                    {"write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": phash_live_trace}
+                                )
                             #return {"type": 0, "write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": trace} # ne pas faire ruturn car casse dès i > 1, faire une liste de result puis resuilt final type list[]; exploité phash_live_list
-                    
                     comparison = {
                         "path1": current_path,
                         "path2": old_path,
@@ -470,6 +464,7 @@ def _duplicates_command(
             timeout=2,
             _dev=True,
             worker_kwargs={
+                "phash_low_log": phash_low_log,
                 "_hashes": None if multiprocessing.get_start_method() == "fork" else hashes,
                 "top_k": top_k,
                 "phash_bits": META["phash_bits"],
@@ -608,9 +603,11 @@ def _duplicates_command(
                                     heapq.heapreplace(final, entry)
                         elif result["type"] == 0:
                             for _result in result["results"]:
-                                tqdm.write(_result["write"])
-                                for _trace in _result["trace"]:
-                                    tqdm.write(_trace)
+                                if _result.get("write"):
+                                    tqdm.write(_result["write"])
+                                if _result.get("trace"):
+                                    for _trace in _result["trace"]:
+                                        tqdm.write(_trace)
                                 _debug_int += 1
                             #if result["trace"]:
                             #    for _trace in result["trace"]:
@@ -674,6 +671,7 @@ def duplicates_command(args: argparse.Namespace) -> None:
         input=args.input,
         verbose=args.verbose,
         phash_live=args.phash_live,
+        phash_low_log=args.phash_low_log,
         phash_max_percent=args.phash_max_percent,
         phash_min_percent=args.phash_min_percent,
         phash_bits=args.phash_bits,
@@ -897,6 +895,11 @@ def main() -> None:
         "--rm-allowed-dirs",
         nargs="+",
         help="Folder(s) with delete permission."
+    )
+    duplicates_parser.add_argument(
+        "--phash-low-log",
+        action="store_true",
+        help=""
     )
     duplicates_parser.set_defaults(
         func=duplicates_command
