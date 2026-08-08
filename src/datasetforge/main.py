@@ -1,3 +1,4 @@
+import hashlib
 import argparse
 import heapq
 import itertools
@@ -121,7 +122,8 @@ def export_command(args: argparse.Namespace) -> None:
 
 
 # pyrefly: ignore [explicit-any]
-def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[bytes], Any], hash_name: str, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> None:
+def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[bytes], Any], hash_name: str, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> list[str]:
+    results: list[str] = []
     hash_size: int = math.isqrt(phash_bits)
     print(f"hash size : {hash_size}")
     
@@ -131,10 +133,10 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
     )
     
     base = os.path.join(output, "__unit__")
-    os.makedirs(base, exist_ok=True)
+    unit_cache = os.path.join(base, "root")
+    os.makedirs(unit_cache, exist_ok=True)
     
     with open(os.path.join(output, "META.json"), "w", encoding="utf-8") as meta:
-        # pyrefly: ignore [unused-call-result]
         meta.write(json.dumps(
             {
                 "phash": {
@@ -152,7 +154,7 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
                 numOffile += 1
     
     total: int = 0
-    TheCache = f"{os.path.join(base, "__cache__")}.jsonl"
+    # TheCache = f"{os.path.join(base, "__cache__")}.jsonl"
     
     pbar = tqdm(
             sourceGen(input, recursive=recursive),
@@ -165,37 +167,48 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
     )
     it = iter(pbar)
     
-    with open(TheCache, "wb") as f, Multicore(func=_index_worker, core=threads or os.cpu_count() or 1, timeout=5) as core:
+    with Multicore(
+        func=_index_worker,
+        worker_kwargs={"verbose": verbose, "hash_size": hash_size, "hash_func": hash_func, "output": unit_cache},
+        core=threads or os.cpu_count() or 1,
+        timeout=2,
+        _dev=True
+    ) as core:
         while total < numOffile:
             try:
                 core.put(
-                    file=next(it),
-                    verbose=verbose,
-                    hash_size=hash_size,
-                    hash_func=hash_func
+                    file=str(next(it))
                 )
             except StopIteration: pass
             
             for _ in core.get():
-                if _:
-                    f.write(_ + b"\n")
-                    total += 1
+                results.append(_)
+                total += 1
+    return results
 
 # pyrefly: ignore [explicit-any]
-def _index_worker(file: str, verbose: bool, hash_size: int, hash_func: Callable[[bytes], Any]) -> bytes:
-    with open(file, "rb") as infile:
-        data: bytes = infile.read()
-        if verbose:
-            tqdm.write(f"[ in  ] : path : '{file}'")
+def _index_worker(file: str, verbose: bool, hash_size: int, hash_func: Callable[[bytes], Any], output: str) -> str:
+    out_file = os.path.join(output, file.lstrip("/"))
+    out_file_json = f"{out_file}.json"
     
-    return orjson.dumps(
-                {
-                    "phash": str(phash_value(data, hash_size=hash_size)),
-                    "hash": hash_func(data).hexdigest(),
-                    "size": len(data),
-                    "path": str(Path(file).resolve())
-                }
-            )
+    if not os.path.isfile(out_file_json):
+        with open(file, "rb") as f:
+            data: bytes = f.read()
+            if verbose:
+                tqdm.write(f"[ in  ] : path : '{file}'")
+        
+        os.makedirs(os.path.dirname(out_file), exist_ok=True)
+        
+        with open(out_file_json, "wb") as f:
+            f.write(orjson.dumps(
+                    {
+                        "phash": str(phash_value(data, hash_size=hash_size)),
+                        "hash": hash_func(data).hexdigest(),
+                        "size": len(data),
+                        "path": str(Path(file).resolve())
+                    }
+                ))
+    return out_file_json
 
 
 
@@ -207,7 +220,7 @@ def index_command(args: argparse.Namespace) -> None:
     # args.phash_bits: int
     # args.no_recursive: bool
     try:
-        return _index(
+        _index(
             input=args.input,
             output=args.output,
             recursive=not args.no_recursive,
@@ -256,8 +269,7 @@ def _phash_live(phash_max_percent: float, phash_min_percent: float, percent: flo
 
 def _duplicates_command(
     top_k: int,
-    input: list[str] | None,
-    input_cache: str | None,
+    input: list[str],
     verbose: bool,
     phash_live: bool,
     phash_max_percent: float | None,
@@ -278,13 +290,13 @@ def _duplicates_command(
         rm_allowed_dirs = _rm_allowed_dirs
     
     try:
-        if bool(input) == bool(input_cache):
-            raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
+        #if bool(input) == bool(input_cache):
+        #    raise RuntimeError("You have specified both --input and --input-cache, which cannot work together.")
         
         if (not phash_max_percent ) is None and phash_live:
             raise RuntimeError("--phash-live defined without --phash-max-percent")
         
-        if (not phash_live) and phash_max_percent != 0.0:
+        if phash_max_percent and (not phash_live):
             raise RuntimeError("--phash-max-percent defined without --phash-live")
         
         if no_recursive and (not input):
@@ -293,25 +305,23 @@ def _duplicates_command(
         if rm_allowed_dirs and len(rm_allowed_dirs) >= 1 and (not allow_rm):
             raise RuntimeError("--rm-allowed-dirs requires --allow-rm.")
         
-        
-        if input:
-            print("Build the index files...")
-            tmp = tempfile.TemporaryDirectory()
-            _index(
-                input=input,
-                output=tmp.name,
-                recursive=not no_recursive,
-                phash_bits=phash_bits,
-                hash_name=hash_default,
-                hash_func=hash_algo[hash_default],
-                verbose=verbose,
-                threads=threads
-            )
-            _input = tmp.name
-        else:
-            if input_cache is None:
-                raise RuntimeError(295)
-            _input = input_cache
+        # liste: list[str] = []
+        print("Build the index files...")
+        #tmp = tempfile.TemporaryDirectory()
+        class tmp:
+            name = f"/tmp/datasetforge/{hashlib.sha256(
+                f"{phash_bits}{hash_default}".encode()).hexdigest()}"
+        liste: list[str] = _index(
+            input=input,
+            output=tmp.name,
+            recursive=not no_recursive,
+            phash_bits=phash_bits,
+            hash_name=hash_default,
+            hash_func=hash_algo[hash_default],
+            verbose=verbose,
+            threads=threads
+        )
+        _input = tmp.name
         
         META: dict[str, str | int] = {}
         with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
@@ -319,10 +329,10 @@ def _duplicates_command(
         
         _start_time = time.monotonic()
         print("syncro...", end='', flush=True)
-        TheCache = []
-        with open(os.path.join(_input, "__unit__", "__cache__.jsonl"), "rb") as f:
-            for line in f:
-                TheCache.append(orjson.loads(line))
+        # TheCache = []
+        # with open(os.path.join(_input, "__unit__", "__cache__.jsonl"), "rb") as f:
+        #     for line in f:
+        #         TheCache.append(orjson.loads(line))
         #liste: list[Path] = list(Path(os.path.join(_input, "__unit__")).rglob('*.json'))
         print(f"done | {time.monotonic() - _start_time}")
         
@@ -330,7 +340,9 @@ def _duplicates_command(
         
         _start_time = time.monotonic()
         print("loading cache file...", end='', flush=True)
-        for entry in TheCache:
+        for entry in liste:
+            with open(entry, "rb") as f:
+                entry = orjson.loads(f.read())
             hashes.append(
                 {
                     "path": str(entry["path"]),
@@ -339,11 +351,24 @@ def _duplicates_command(
             )
         print(f"done | {time.monotonic() - _start_time}")
         
-        def _duplicates_command_worker(i: list[int], top_k: int, phash_bits: int, phash_live: bool,
+        """
+        cache_distance: dict[tuple[str, str], int] = {}
+        cache_distance_file = os.path.join(_input, "__unit__", "__cache_distance__.json")
+        if os.path.isfile(cache_distance_file):
+            with open(os.path.join(cache_distance_file), "rb") as f:
+                data = f.read()
+                if len(data) > 0:
+                    cache_distance = orjson.loads(data)
+        """
+        
+        def _duplicates_command_worker(
+            i: list[int], top_k: int, phash_bits: int, phash_live: bool,
                                         phash_min_percent: float, phash_max_percent: float,
                                         allow_rm: bool, rm_allowed_dirs: list[Path] | None,
                                         _hashes: list[dict[str, str | ImageHash]] | None = None
             ) -> dict[str, int | str | list[Any]]:
+            #cache_distance = {}
+            
             phash_live_trace: list[str] = []
             phash_live_return: list[dict[str, int | str | list[str]]] = []
             if _hashes is None:
@@ -379,7 +404,7 @@ def _duplicates_command(
                     # pyrefly: ignore [bad-assignment]
                     old_phash: ImageHash = old_hash["phash"]
                     
-                    # pyrefly: ignore [unsupported-operation]
+                    # distance = (current_phash ^ old_phash).bit_count()
                     distance = current_phash - old_phash
                     
                     if phash_live:
@@ -405,7 +430,9 @@ def _duplicates_command(
                                             except FileNotFoundError:
                                                 phash_live_trace.append(f"FileNotFoundError : {rm_file}")
                                         break
-                            phash_live_return.append({"write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": phash_live_trace})
+                            phash_live_return.append(
+                                {"write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": phash_live_trace}
+                            )
                             #return {"type": 0, "write": f"phash-live : {old_path} - {current_path} : {percent}", "trace": trace} # ne pas faire ruturn car casse dès i > 1, faire une liste de result puis resuilt final type list[]; exploité phash_live_list
                     
                     comparison = {
@@ -623,6 +650,10 @@ def _duplicates_command(
     except Exception:  # noqa: TRY203
         raise
     finally:
+        """
+        with open(cache_distance_file, "wb") as f:
+            f.write(orjson.dumps(cache_distance))
+        """
         print(time.monotonic() - start_time_task)
         print(f"_debug_int : {_debug_int}")
 
@@ -641,7 +672,6 @@ def duplicates_command(args: argparse.Namespace) -> None:
     _duplicates_command(
         top_k=args.top_k,
         input=args.input,
-        input_cache=args.input_cache,
         verbose=args.verbose,
         phash_live=args.phash_live,
         phash_max_percent=args.phash_max_percent,
@@ -804,12 +834,12 @@ def main() -> None:
         help="Folders of the datasets.",
         default=None
     )
-    duplicates_parser.add_argument(
-        "--input-cache",
-        help="Folder of the cached json.",
-        type=str,
-        default=None
-    )
+    # duplicates_parser.add_argument(
+    #     "--input-cache",
+    #     help="Folder of the cached json.",
+    #     type=str,
+    #     default=None
+    # )
     #duplicates_parser.add_argument(
     #    "--phash",
     #    action="store_true"
