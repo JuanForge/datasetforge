@@ -58,8 +58,7 @@ def _worker(
                     }
                 )
         except BaseException as e:  # noqa: BLE001
-            output_Queue.put({"error": True, "raise": e})
-            print(traceback.format_exc())
+            output_Queue.put({"error": True, "raise": e, "traback": traceback.format_exc()})
 
 
 # pyrefly: ignore [explicit-any]
@@ -89,7 +88,7 @@ class Multicore:
     ) -> None:
         core = core or os.cpu_count() or 1
         # pyrefly: ignore [explicit-any]
-        self._input_Queue: QueueType[dict[Any, Any] | None] = Queue(maxsize=input_Queue or (int(core * 1.5)))
+        self._input_Queue: QueueType[dict[Any, Any] | None] = Queue(maxsize=input_Queue or max(1, int(core * 1.5)))
         # pyrefly: ignore [explicit-any]
         self._output_Queue: QueueType[dict[Any, Any]] = Queue()
         self.func = func
@@ -163,6 +162,7 @@ class Multicore:
             
             if data["error"]:
                 print("="*5 + "ERROR IN WORKERS" + "="*5)
+                print(data.get("traback", ""))
                 if self.closeOnError:
                     self.close()
                 raise errors.workerRunError(str(data["raise"]))
