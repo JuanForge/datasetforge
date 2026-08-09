@@ -1,6 +1,7 @@
 import os
 import platform
 import signal
+import sys
 import time
 import traceback
 from collections.abc import Callable, Generator
@@ -45,7 +46,7 @@ def _worker(
         try:
             tache = input_Queue.get(block=True)
             if tache == None:
-                if dev: print("stop")
+                if dev: sys.stdout.write("[stop]")
                 return
             else:
                 output_Queue.put(

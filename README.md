@@ -109,6 +109,18 @@ datasetforge duplicates --phash-bits 262144
 
 Specifies one or more dataset directories. Indexes are generated automatically, making this suitable for small datasets where pre-indexing is unnecessary.
 
+# Optimizer
+| Operation | Performance |
+|---|---:|
+| --phash-local-numpy | Speed **x3.50** |
+| --phash-local-xor | Speed **x23.5** |
+---
+
+I strongly recommend using `--phash-local-xor` for significantly better performance. It calculates the Hamming distance directly using a bitwise XOR operation, making it especially efficient on 64-bit processors. It is not enabled by default because I cannot guarantee that this implementation will always produce exactly the same behavior as the original distance operation.
+
+`--phash-local-numpy` uses NumPy to compare the individual hash elements instead. While it provides lower performance than the XOR implementation, it more closely follows the original element-wise distance calculation and is therefore the safer choice when exact compatibility is preferred.
+
+
 # Python
 ### Developed with Python 3.12.3
 
