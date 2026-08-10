@@ -23,7 +23,8 @@ dependencies = [
     "xxhash",
     "humanize",
     "blake3",
-    "send2trash"
+    "send2trash",
+    "pympler"
 ]
 
 [project.scripts]

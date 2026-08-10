@@ -7,7 +7,6 @@ import math
 import multiprocessing
 import os
 import sys
-import tempfile
 import threading
 import time
 import warnings
@@ -21,6 +20,7 @@ import numpy
 import orjson
 import psutil
 from imagehash import ImageHash
+from pympler import asizeof
 from send2trash import send2trash
 from tqdm import tqdm
 
@@ -429,10 +429,13 @@ def _duplicates_command(
                     # distance = (current_phash ^ old_phash).bit_count()
                     if phash_local_numpy:
                         # assert current_phash.hash.shape == old_phash.hash.shape
+                        # pyrefly: ignore [missing-attribute]
                         distance = numpy.count_nonzero(current_phash.hash != old_phash.hash)
                     elif phash_local_xor:
+                        # pyrefly: ignore [unsupported-operation]
                         distance = (current_phash ^ old_phash).bit_count()
                     else:
+                        # pyrefly: ignore [unsupported-operation]
                         distance = current_phash - old_phash
                     
                     if phash_live:
@@ -747,7 +750,6 @@ def main() -> None:
         """
     )
     
-    _help_phash_bits = "Set the pHash bit size. Higher values increase precision and reduce collisions, which is useful for large datasets."
     _help_no_recursive = "Do not scan subdirectories recursively"
     
     parser = argparse.ArgumentParser(
@@ -890,7 +892,7 @@ def main() -> None:
     #)
     duplicates_parser.add_argument(
         "--phash-bits",
-        help="Requires `--input` to operate; `--input-cache` uses the same one specified during its creation. " + _help_phash_bits,
+        help='Set the pHash bit size. Higher values increase precision and reduce collisions, which is useful for large datasets.',
         type=int,
         default=64
     )
@@ -940,7 +942,10 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--rm-allowed-dirs",
         nargs="+",
-        help="Folder(s) with delete permission."
+        help="""
+        Folder(s) where recursive file deletion is allowed.
+        Files matching the pHash difference range specified by `--phash-min-percent` and `--phash-max-percent` can be automatically deleted.
+        """
     )
     duplicates_parser.add_argument(
         "--phash-low-log",
@@ -950,24 +955,34 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--system-cache",
         action="store_true",
-        help="Use the system cache instead of /tmp for persistent caching."
+        help="Use the system cache (.cache) instead of /tmp for persistent caching."
     )
+    # duplicates_parser.add_argument(
+    #     "--phash-local-numpy",
+    #     action="store_true",
+    #     help=
+    #     """
+    #     Uses NumPy local for pHash distance calculations without additional safety checks, enabling this option can provide a performance improvement of x3.5.
+    #     """
+    # )
+    # duplicates_parser.add_argument(
+    #     "--phash-local-xor",
+    #     action="store_true",
+    #     help=
+    #     """
+    #     Use XOR-based pHash distance calculation for up to 23.5x faster performance on 64-bit processors.
+    #     """
+    # )
     duplicates_parser.add_argument(
-        "--phash-local-numpy",
-        action="store_true",
-        help=
-        """
-        Uses NumPy local for pHash distance calculations without additional safety checks.
-        On an unmodified cache, enabling this option can provide a performance improvement of x3.5.
-        """
+        "--phash-optimizer",
+        choices=("default", "numpy", "xor"),
+        default="default",
+    help=(
+        "pHash optimization method: "
+        "'default' uses the standard Python implementation of ImageHash. "
+        "'numpy' Uses a locally patched NumPy implementation for pHash distance calculations without additional safety checks, for up to 3.5x faster. "
+        "'xor' Use XOR-based pHash distance calculation for up to 23.5x faster performance on 64-bit processors."
     )
-    duplicates_parser.add_argument(
-        "--phash-local-xor",
-        action="store_true",
-        help=
-        """
-        Use XOR-based pHash distance calculation for up to 23.5x faster performance on 64-bit processors.
-        """
     )
     duplicates_parser.set_defaults(
         func=duplicates_command
