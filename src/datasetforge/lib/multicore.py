@@ -190,7 +190,7 @@ class Multicore:
             
             for worker in self.workers:
                 if worker.is_alive():
-                    if self._dev: print("kill !")
+                    if self._dev: sys.stdout.write("[kill]")
                     worker.kill()
                 worker.join()
             

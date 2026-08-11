@@ -119,7 +119,7 @@ def main(
     numOffile = 0
     print(f"syncro in {', '.join(folders)}...")
     
-    for _ in sourceGen(folders, recursive=recursive):
+    for _ in sourceGen(folders, recursive=recursive, exclude_dirs=None):
         if _.is_file():
             numOffile += 1
     

@@ -12,7 +12,7 @@ import time
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import humanize
 import imagehash
@@ -123,7 +123,7 @@ def export_command(args: argparse.Namespace) -> None:
 
 
 # pyrefly: ignore [explicit-any]
-def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[bytes], Any], hash_name: str, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> list[str]:
+def _index(input: list[str], exclude_dir: list[str] | None, output: str, recursive: bool, hash_func: Callable[[bytes], Any], hash_name: str, threads: int = 0, verbose: bool = True, phash_bits: int = 64) -> list[str]:
     pbar: None | tqdm[Any] = None
     try:
         results: list[str] = []
@@ -131,13 +131,12 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
         print(f"hash size : {hash_size}")
         
         if hash_size * hash_size != phash_bits:
-            raise ValueError(
+            raise RuntimeError(
                 "--phash-bits must be a perfect square (64, 256, 1024, ...)"
         )
         
         base = os.path.join(output, "__unit__")
-        unit_cache = os.path.join(base, "root")
-        os.makedirs(unit_cache, exist_ok=True)
+        os.makedirs(base, exist_ok=True)
         
         with open(os.path.join(output, "META.json"), "w", encoding="utf-8") as meta:
             meta.write(json.dumps(
@@ -153,16 +152,16 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
         
         start_time = time.monotonic()
         print(f"syncro in {', '.join(input)}...", end='', flush=True)
-        for _ in sourceGen(input, recursive=recursive):
-                if _.is_file():
-                    numOffile += 1
+        for _ in sourceGen(input, recursive=recursive, exclude_dirs=exclude_dir):
+                numOffile += 1
         print(f"done | {time.monotonic() - start_time}")
+        
         
         total: int = 0
         # TheCache = f"{os.path.join(base, "__cache__")}.jsonl"
         
         pbar = tqdm(
-                sourceGen(input, recursive=recursive),
+                sourceGen(input, recursive=recursive, exclude_dirs=exclude_dir),
                 total=numOffile,
                 desc="index",
                 dynamic_ncols=True,
@@ -174,7 +173,7 @@ def _index(input: list[str], output: str, recursive: bool, hash_func: Callable[[
         
         with Multicore(
             func=_index_worker,
-            worker_kwargs={"verbose": verbose, "hash_size": hash_size, "hash_func": hash_func, "output": unit_cache},
+            worker_kwargs={"verbose": verbose, "hash_size": hash_size, "hash_func": hash_func, "output": base},
             core=threads or os.cpu_count() or 1,
             timeout=2,
             _dev=True
@@ -221,6 +220,7 @@ def _index_worker(file: str, verbose: bool, hash_size: int, hash_func: Callable[
         os.replace(f"{out_file_json}.tmp", out_file_json)
     return out_file_json
 
+"""
 def index_command(args: argparse.Namespace) -> None:
     # args.input: list[str]
     # args.output: str
@@ -241,6 +241,7 @@ def index_command(args: argparse.Namespace) -> None:
         )
     except KeyboardInterrupt:
         return
+"""
 
 """
 def jsonloadcache(x: bytes) -> dict[str, str | int]:
@@ -264,22 +265,24 @@ def _phash_live(phash_max_percent: float, phash_min_percent: float, percent: flo
 """
 
 def _duplicates_command(
-    top_k: int,
     input: list[str],
-    system_cache: bool,
-    phash_local_numpy: bool,
-    phash_local_xor: bool,
+    exclude_dir: list[str] | None,
+    top_k: int | None,
+    hash_value: str,
+    no_system_cache: bool,
+    phash_optimizer: Literal["default", "numpy", "xor"],
     verbose: bool,
     phash_live: bool,
     phash_low_log: bool,
     phash_max_percent: float | None,
-    phash_min_percent: float,
+    phash_min_percent: float | None,
     phash_bits: int,
     no_recursive: bool,
     allow_rm: bool,
     rm_allowed_dirs: list[str] | list[Path] | None,
     threads: int = os.cpu_count() or 1,
 ) -> None:
+    _dev_permit_rm: bool = False
     start_time_task = None
     
     if not rm_allowed_dirs is None:
@@ -291,9 +294,22 @@ def _duplicates_command(
                 _rm_allowed_dirs.append(Path(_))
         rm_allowed_dirs = _rm_allowed_dirs
     
+    phash_local_xor = phash_local_numpy = None
+    
+    if phash_optimizer == "default":
+        pass
+    elif phash_optimizer == "numpy":
+        phash_local_numpy = True
+    elif phash_optimizer == "xor":
+        phash_local_xor = True
+    else:
+        raise RuntimeError("invalid value for the optimizer")
+    
+    hash_func = hash_algo[hash_value]
+    
     try:
-        if phash_local_numpy and phash_local_xor:
-            raise RuntimeError("You have specified both --phash-local-numpy and --phash-local-xor, which cannot work together.")
+        if phash_live and ( phash_min_percent is None or phash_max_percent is None ):
+            raise RuntimeError("--phash-live without defining --phash-min-percent and/or --phash-max-percent.")
         
         if (not phash_max_percent ) is None and phash_live:
             raise RuntimeError("--phash-live defined without --phash-max-percent")
@@ -307,11 +323,7 @@ def _duplicates_command(
         if rm_allowed_dirs and len(rm_allowed_dirs) >= 1 and (not allow_rm):
             raise RuntimeError("--rm-allowed-dirs requires --allow-rm.")
         
-        # liste: list[str] = []
-        print("Build the index files...")
-        #tmp = tempfile.TemporaryDirectory()
-        
-        if system_cache:
+        if not no_system_cache:
             _env = os.environ.get("XDG_CACHE_HOME")
             if type(_env) is str:
                 name_base = _env
@@ -320,17 +332,18 @@ def _duplicates_command(
         else:
             name_base = "/tmp/"
         
-        name = os.path.join(name_base, "datasetforge", hashlib.sha256(f"{phash_bits}{hash_default}".encode()).hexdigest())
+        name = os.path.join(name_base, "datasetforge", hashlib.sha256(f"{phash_bits}{hash_value}".encode()).hexdigest())
         del name_base
         tqdm.write(f"cache used : {name}")
         
         liste: list[str] = _index(
             input=input,
+            exclude_dir=exclude_dir,
             output=name,
             recursive=not no_recursive,
             phash_bits=phash_bits,
-            hash_name=hash_default,
-            hash_func=hash_algo[hash_default],
+            hash_name=hash_value,
+            hash_func=hash_func,
             verbose=verbose,
             threads=threads
         )
@@ -368,28 +381,22 @@ def _duplicates_command(
                 }
             )
         print(f"done | {time.monotonic() - _start_time}")
-        
-        """
-        cache_distance: dict[tuple[str, str], int] = {}
-        cache_distance_file = os.path.join(_input, "__unit__", "__cache_distance__.json")
-        if os.path.isfile(cache_distance_file):
-            with open(os.path.join(cache_distance_file), "rb") as f:
-                data = f.read()
-                if len(data) > 0:
-                    cache_distance = orjson.loads(data)
-        """
+        print(f"total : {len(hashes)}")
         
         def _duplicates_command_worker(
             i: list[int],
             phash_low_log: bool,
             phash_local_numpy: bool,
             phash_local_xor: bool,
-            top_k: int, phash_bits: int, phash_live: bool,
-                                        phash_min_percent: float, phash_max_percent: float,
-                                        allow_rm: bool, rm_allowed_dirs: list[Path] | None,
-                                        _hashes: list[dict[str, str | ImageHash | int]] | None = None
-            ) -> dict[str, int | str | list[Any]]:
-            #cache_distance = {}
+            top_k: int| None,
+            phash_bits: int,
+            phash_live: bool,
+            phash_min_percent: float,
+            phash_max_percent: float,
+            allow_rm: bool,
+            rm_allowed_dirs: list[Path] | None,
+            _hashes: list[dict[str, str | ImageHash | int]] | None = None
+        ) -> dict[str, int | str | list[Any]]:
             
             phash_live_trace: list[str] = []
             phash_live_return: list[dict[str, int | str | list[str]]] = []
@@ -458,8 +465,8 @@ def _duplicates_command(
                                         if not phash_low_log:
                                             phash_live_trace.append(f"\033[32mfound : {old_path} = {current_path}\033[0m")
                                             phash_live_trace.append(f"\033[32mvalid rm : {rm_file}\033[0m")
-                                        # pyrefly: ignore [unnecessary-comparison]
-                                        if True is False:  # noqa: PLR0133
+                                        
+                                        if _dev_permit_rm:
                                             try:
                                                 send2trash(rm_file)
                                             except FileNotFoundError:
@@ -631,7 +638,7 @@ def _duplicates_command(
                     for result in core.get(timeout=timeout_get):
                         pbar.update()
                         finished += 1
-                        if result["type"] == 1:
+                        if result["type"] == 1 and type(top_k) is int:
                             for item in result["results"]:
                                 distance = item["distance"]
                                 entry = (
@@ -681,7 +688,7 @@ def _duplicates_command(
                         break
                 
                 print(
-                    f"k-top : {item['path1']} - {item['path2']} : {percent}% diff"
+                    f"k-top : '{item['path1']}' - '{item['path2']}' : {percent}% diff"
                 )
             
             print("="*5 + " Summary " + "="*5)
@@ -701,23 +708,13 @@ def _duplicates_command(
             print(time.monotonic() - start_time_task)
 
 def duplicates_command(args: argparse.Namespace) -> None:
-    # args.top_k: int
-    # args.input: list[str] | None
-    # args.input_cache: str | None
-    # args.output: str
-    # args.verbose: bool
-    # args.stream: bool
-    # args.phash_live: bool
-    # args.phash_max_percent: float - default == 0.0
-    # args.phash_min_percent: float - default == 0.0
-    # args.phash_bits: int
-    # args.no_recursive: bool
     _duplicates_command(
-        top_k=args.top_k,
         input=args.input,
-        phash_local_numpy=args.phash_local_numpy,
-        phash_local_xor=args.phash_local_xor,
-        system_cache=args.system_cache,
+        exclude_dir=args.exclude_dir,
+        top_k=args.top_k,
+        hash_value=args.hash,
+        phash_optimizer=args.phash_optimizer,
+        no_system_cache=args.no_system_cache,
         verbose=args.verbose,
         phash_live=args.phash_live,
         phash_low_log=args.phash_low_log,
@@ -770,13 +767,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--max-memory",
-        help="K, M, G, T",
+        help="Maximum memory available to DatasetForge (e.g. 1024K, 1024M, 16G, 1T).",
         type=str,
         default=None
     )
     parser.add_argument(
         "--threads",
-        help="Num of threads.",
+        help="Number of worker threads used for dataset processing.",
         type=int,
         default=os.cpu_count() or 1
     )
@@ -831,43 +828,6 @@ def main() -> None:
         func=export_command
     )
     
-    # == index ==
-    # index_parser = subparsers.add_parser(
-    #     "index",
-    #     help="Make the index file for image.",
-    #     allow_abbrev=False
-    # )
-    # index_parser.add_argument(
-    #     "--input",
-    #     nargs="+",
-    #     required=True,
-    #     help="Folders."
-    # )
-    # index_parser.add_argument(
-    #     "--output",
-    #     help="Foler ouput for cache json file.",
-    #     required=True
-    # )
-    # index_parser.add_argument(
-    #     "--no-recursive",
-    #     action="store_true",
-    #     help=_help_no_recursive
-    # )
-    # index_parser.add_argument(
-    #     "--phash-bits",
-    #     help=_help_phash_bits,
-    #     type=int,
-    #     default=64
-    # )
-    # index_parser.add_argument(
-    #     "--hash",
-    #     choices=list(hash_algo.keys()),
-    #     default=hash_default
-    # )
-    # index_parser.set_defaults(
-    #     func=index_command
-    # )
-    
     # == duplicates ==
     duplicates_parser = subparsers.add_parser(
         "duplicates",
@@ -880,16 +840,24 @@ def main() -> None:
         help="Folders of the datasets.",
         default=None
     )
-    # duplicates_parser.add_argument(
-    #     "--input-cache",
-    #     help="Folder of the cached json.",
-    #     type=str,
-    #     default=None
-    # )
+    duplicates_parser.add_argument(
+        "--exclude-dir",
+        nargs="+",
+        default=None,
+        help="""
+        Exclude directories located inside --input directories.
+        Useful for excluding subdirectories of an input directory."
+        """
+    )
     #duplicates_parser.add_argument(
     #    "--phash",
     #    action="store_true"
     #)
+    duplicates_parser.add_argument(
+        "--hash",
+        choices=list(hash_algo.keys()),
+        default=hash_default
+    )
     duplicates_parser.add_argument(
         "--phash-bits",
         help='Set the pHash bit size. Higher values increase precision and reduce collisions, which is useful for large datasets.',
@@ -917,7 +885,7 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--phash-min-percent",
         type=float,
-        default=0.0,
+        default=None,
         help=(
             "Minimum pHash difference percentage to display. Must be used together "
             "with --phash-live. Displays every file pair with a pHash difference "
@@ -927,12 +895,13 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--top-k",
         type=int,
-        default=0
+        default=None,
+        help="Return the K results with the lowest pHash distance."
     )
     duplicates_parser.add_argument(
         "--no-recursive",
         action="store_true",
-        help="Requires `--input` to operate; " + _help_no_recursive
+        help=_help_no_recursive
     )
     duplicates_parser.add_argument(
         "--allow-rm",
@@ -953,36 +922,20 @@ def main() -> None:
         help=""
     )
     duplicates_parser.add_argument(
-        "--system-cache",
+        "--no-system-cache",
         action="store_true",
-        help="Use the system cache (.cache) instead of /tmp for persistent caching."
+        help="" # "Use the system cache (.cache) instead of /tmp for persistent caching."
     )
-    # duplicates_parser.add_argument(
-    #     "--phash-local-numpy",
-    #     action="store_true",
-    #     help=
-    #     """
-    #     Uses NumPy local for pHash distance calculations without additional safety checks, enabling this option can provide a performance improvement of x3.5.
-    #     """
-    # )
-    # duplicates_parser.add_argument(
-    #     "--phash-local-xor",
-    #     action="store_true",
-    #     help=
-    #     """
-    #     Use XOR-based pHash distance calculation for up to 23.5x faster performance on 64-bit processors.
-    #     """
-    # )
     duplicates_parser.add_argument(
         "--phash-optimizer",
         choices=("default", "numpy", "xor"),
         default="default",
-    help=(
-        "pHash optimization method: "
-        "'default' uses the standard Python implementation of ImageHash. "
-        "'numpy' Uses a locally patched NumPy implementation for pHash distance calculations without additional safety checks, for up to 3.5x faster. "
-        "'xor' Use XOR-based pHash distance calculation for up to 23.5x faster performance on 64-bit processors."
-    )
+        help=(
+            "pHash optimization method: "
+            "'default' uses the standard Python implementation of ImageHash. "
+            "'numpy' Uses a locally patched NumPy implementation for pHash distance calculations without additional safety checks, for up to 3.5x faster. "
+            "'xor' Use XOR-based pHash distance calculation for up to 23.5x faster performance on 64-bit processors."
+        )
     )
     duplicates_parser.set_defaults(
         func=duplicates_command
