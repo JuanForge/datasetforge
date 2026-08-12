@@ -1,3 +1,4 @@
+import shutil
 import argparse
 import hashlib
 import heapq
@@ -264,6 +265,20 @@ def _phash_live(phash_max_percent: float, phash_min_percent: float, percent: flo
     return [False, 0]
 """
 
+def _cache_base_sys(system_cache: bool, add_name: bool = True) -> str:
+    if system_cache:
+        _env = os.environ.get("XDG_CACHE_HOME")
+        if type(_env) is str:
+            name_base = _env
+        else:
+            name_base = os.path.expanduser("~/.cache")
+    else:
+        name_base = "/tmp/"
+    
+    if add_name:
+        name_base = os.path.join(name_base, "datasetforge")
+    return name_base
+
 def _duplicates_command(
     input: list[str],
     exclude_dir: list[str] | None,
@@ -323,16 +338,10 @@ def _duplicates_command(
         if rm_allowed_dirs and len(rm_allowed_dirs) >= 1 and (not allow_rm):
             raise RuntimeError("--rm-allowed-dirs requires --allow-rm.")
         
-        if not no_system_cache:
-            _env = os.environ.get("XDG_CACHE_HOME")
-            if type(_env) is str:
-                name_base = _env
-            else:
-                name_base = os.path.expanduser("~/.cache")
-        else:
-            name_base = "/tmp/"
-        
-        name = os.path.join(name_base, "datasetforge", hashlib.sha256(f"{phash_bits}{hash_value}".encode()).hexdigest())
+        name_base = _cache_base_sys(
+            system_cache=(not no_system_cache)
+        )
+        name = os.path.join(name_base, hashlib.sha256(f"{phash_bits}{hash_value}".encode()).hexdigest())
         del name_base
         tqdm.write(f"cache used : {name}")
         
@@ -352,15 +361,6 @@ def _duplicates_command(
         META: dict[str, str | int] = {}
         with open(os.path.join(_input, "META.json"), "r", encoding="utf-8") as meta:
             META["phash_bits"] = json.loads(meta.read())["phash"]["bits"]
-        
-        # _start_time = time.monotonic()
-        # print("syncro...", end='', flush=True)
-        # TheCache = []
-        # with open(os.path.join(_input, "__unit__", "__cache__.jsonl"), "rb") as f:
-        #     for line in f:
-        #         TheCache.append(orjson.loads(line))
-        #liste: list[Path] = list(Path(os.path.join(_input, "__unit__")).rglob('*.json'))
-        #  print(f"done | {time.monotonic() - _start_time}")
         
         hashes: list[dict[str, str | ImageHash | int]] = []
         
@@ -727,6 +727,43 @@ def duplicates_command(args: argparse.Namespace) -> None:
         rm_allowed_dirs=args.rm_allowed_dirs
     )
 
+def _cache_info_commande(system_cache: bool) -> None:
+    total_files = total_size = 0
+    
+    cache = _cache_base_sys(system_cache=system_cache)
+    
+    print(f"base cache : {cache} \n")
+    
+    for entry in os.scandir(cache):
+        entry_size = 0
+        entry_files = 0
+        if entry.is_dir():
+            print("\033[33m" + os.path.basename(entry.path) + "\033[0m")
+            
+            for i in sourceGen(entry.path, recursive=True, exclude_dirs=None, types=["*"]):
+                entry_files += 1
+                entry_size += i.stat().st_size
+            
+            with open(os.path.join(entry.path, "META.json"), "r", encoding="utf-8") as f:
+                data = json.loads(f.read())
+                print(" " * 6 + f"phash_bits : '\033[32m{data["phash"]["bits"]}\033[0m' | hash : '\033[32m{data["hash"]}\033[0m'")
+                print(" " * 8 + f"files : {entry_files} | size : {humanize.naturalsize(entry_size, binary=True)}")
+        total_files += entry_files
+        total_size += entry_size
+    print("\n" + "-"* 40)
+    print(f"files : {total_files} | size : {humanize.naturalsize(total_size, binary=True)}")
+
+def cache_info_commande(args: argparse.Namespace) -> None:
+    return _cache_info_commande(
+        system_cache=(not args.no_system_cache)
+    )
+
+def _cache_clear_commande(system_cache: bool) -> None:
+    shutil.rmtree(_cache_base_sys(system_cache=system_cache))
+
+def cache_clear_commande(args: argparse.Namespace) -> None:
+    return _cache_clear_commande(system_cache=(not args.no_system_cache))
+
 
 
 def main() -> None:
@@ -754,7 +791,6 @@ def main() -> None:
         description="DatasetForge is a toolkit for optimizing and preparing image datasets for AI training.",
         allow_abbrev=False
     )
-    
     parser.add_argument(
         "--allow-unsupported-kernel",
         help="Allow execution on unsupported kernels.",
@@ -776,6 +812,11 @@ def main() -> None:
         help="Number of worker threads used for dataset processing.",
         type=int,
         default=os.cpu_count() or 1
+    )
+    parser.add_argument(
+        "--no-system-cache",
+        action="store_true",
+        help="Use /tmp instead of the system cache (.cache) for non-persistent caching."
     )
     subparsers = parser.add_subparsers(
         dest="command",
@@ -922,11 +963,6 @@ def main() -> None:
         help=""
     )
     duplicates_parser.add_argument(
-        "--no-system-cache",
-        action="store_true",
-        help="" # "Use the system cache (.cache) instead of /tmp for persistent caching."
-    )
-    duplicates_parser.add_argument(
         "--phash-optimizer",
         choices=("default", "numpy", "xor"),
         default="default",
@@ -951,6 +987,33 @@ def main() -> None:
     )
     # ======
     
+    cache_parser = subparsers.add_parser(
+        "cache",
+        help="",
+        allow_abbrev=False
+    )
+    
+    cache_subparsers = cache_parser.add_subparsers(
+        dest="cache_command",
+        required=True
+    )
+    
+    cache_info_parser = cache_subparsers.add_parser(
+        "info",
+        help="",
+        allow_abbrev=False
+    )
+    cache_info_parser.set_defaults(
+        func=cache_info_commande
+    )
+    cache_clear_parser = cache_subparsers.add_parser(
+        "clear",
+        help="",
+        allow_abbrev=False
+    )
+    cache_clear_parser.set_defaults(
+        func=cache_clear_commande
+    )
     args = parser.parse_args()
     
     if (not args.allow_unsupported_kernel ) and os.name != "posix":

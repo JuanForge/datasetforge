@@ -133,7 +133,7 @@ def main(
     
     try:
         for file in tqdm(
-            sourceGen(folders, recursive=recursive),
+            sourceGen(folders, recursive=recursive, exclude_dirs=None),
             total=numOffile,
             desc="build",
             dynamic_ncols=True,

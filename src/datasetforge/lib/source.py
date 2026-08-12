@@ -28,7 +28,7 @@ def _if_exclude(file: Path, exclude_dirs: list[str]) -> bool:
             return True
     return False
 
-def sourceGen(path: list[str] | str, recursive: bool, exclude_dirs: list[str] | str | None) -> Generator[Path, None, None]:
+def sourceGen(path: list[str] | str, recursive: bool, exclude_dirs: list[str] | str | None, types: list[str] | None = None) -> Generator[Path, None, None]:
     if type(path) is str:
         path = [path]
     
@@ -37,6 +37,9 @@ def sourceGen(path: list[str] | str, recursive: bool, exclude_dirs: list[str] | 
     
     if exclude_dirs is None:
         exclude_dirs = []
+    
+    if types is None:
+        types = in_type
     
     if recursive:
         func = "rglob"
@@ -48,7 +51,7 @@ def sourceGen(path: list[str] | str, recursive: bool, exclude_dirs: list[str] | 
             sourceGen_Cache_exclude[exclude] = Path(exclude).absolute()
     
     for folder in path:
-        for _ext in in_type:
+        for _ext in types:
             for _file in getattr(Path(folder), func)(_ext):
                 _file: Path
                 if os.path.isfile(_file):  # noqa: SIM102
