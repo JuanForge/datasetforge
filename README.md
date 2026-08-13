@@ -66,7 +66,7 @@ Therefore, it is completely normal for the same pair of images to receive much h
 
 Controls the resolution of the perceptual hash used during comparison.
 
-- **Default:** `4096`
+- **Default:** `64`
 - **Higher values** preserve more visual information, allowing finer comparisons.
 - **Lower values** are faster and use less memory but may miss subtle similarities.
 
@@ -87,13 +87,16 @@ Specifies one or more dataset directories. Indexes are generated automatically, 
 # Optimizer
 | Operation | Performance |
 |---|---:|
-| --phash-local-numpy | Speed **x3.50** |
-| --phash-local-xor | Speed **x23.5** |
+| --phash-optimizer default | Speed **x0.00** |
+| --phash-optimizer numpy | Speed **x3.50** |
+| --phash-optimizer xor | Speed **x23.5** |
 ---
 
 I strongly recommend using `--phash-local-xor` for significantly better performance. It calculates the Hamming distance directly using a bitwise XOR operation, making it especially efficient on 64-bit processors. It is not enabled by default because I cannot guarantee that this implementation will always produce exactly the same behavior as the original distance operation.
 
 `--phash-local-numpy` uses NumPy to compare the individual hash elements instead. While it provides lower performance than the XOR implementation, it more closely follows the original element-wise distance calculation and is therefore the safer choice when exact compatibility is preferred.
+
+>The optimizer has nothing to do with the one used for model training; it’s simply a different implementation for calculating the distance more efficiently.
 
 
 # Python
@@ -103,6 +106,10 @@ I strongly recommend using `--phash-local-xor` for significantly better performa
 ---
 * Tested on a dataset of 30k images: stays under 300 MB of memory (PSS + main), using 20 workers and XOR acceleration, and completes in 20 seconds (excluding indexing).
 ---
+
+# Windows System
+#### Indirect Windows support is possible through WSL2, which allows Linux code to run on a Windows system.
+
 
 # WARNING
 > [!WARNING]
