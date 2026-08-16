@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "datasetforge"
-version = "0.0.2"
+version = "0.0.3"
 description = "DatasetForge is a toolkit for optimizing and preparing image datasets for AI training. It provides dataset analysis, cleaning, optimization and conversion tools, including image re-encoding and preprocessing workflows."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,7 +24,8 @@ dependencies = [
     "humanize",
     "blake3",
     "send2trash",
-    "pympler"
+    "pympler",
+    "av"
 ]
 
 [project.scripts]

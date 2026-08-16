@@ -1,4 +1,3 @@
-import shutil
 import argparse
 import hashlib
 import heapq
@@ -7,6 +6,7 @@ import json
 import math
 import multiprocessing
 import os
+import shutil
 import sys
 import threading
 import time
@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
+import av
 import humanize
 import imagehash
 import numpy
@@ -33,7 +34,7 @@ from datasetforge.lib.hash import hash_algo, hash_default
 from datasetforge.lib.inject_console import PrefixWriter
 from datasetforge.lib.multicore import Multicore
 from datasetforge.lib.phash import get as phash_value
-from datasetforge.lib.source import sourceGen
+from datasetforge.lib.source import sourceGen, type_video
 
 
 class errors:
@@ -297,7 +298,7 @@ def _duplicates_command(
     rm_allowed_dirs: list[str] | list[Path] | None,
     threads: int = os.cpu_count() or 1,
 ) -> None:
-    _dev_permit_rm: bool = False
+    _dev_permit_rm: bool = True
     start_time_task = None
     
     if not rm_allowed_dirs is None:
@@ -460,6 +461,7 @@ def _duplicates_command(
                                         rm_file = current_path
                                     else:
                                         rm_file = None
+                                    
                                     if rm_file:
                                         rm_file = Path(rm_file)
                                         if not phash_low_log:
@@ -765,6 +767,60 @@ def cache_clear_commande(args: argparse.Namespace) -> None:
     return _cache_clear_commande(system_cache=(not args.no_system_cache))
 
 
+def video2image_seek(
+    target: float,
+    source: av.container.input.InputContainer,
+    stream: av.video.stream.VideoStream
+) -> None:
+    # pyrefly: ignore [unsupported-operation]
+    source.seek(int(target / stream.time_base), backward=True, stream=stream)
+    for _ in source.decode(video=0):
+        if _.time >= target:
+            return
+
+def video2image_worker(input: str, out: str, every: int|None = None, interval: float|None = None) -> None:
+    next_time = 0.0
+    with av.open(input) as source:
+        stream = source.streams.video[0]
+        for i, frame in enumerate(source.decode(video=0)):
+            #print(str(frame.time) + "\n")
+                                                    # pyrefly: ignore [unsupported-operation]
+            timestamp = frame.time or float(frame.pts * stream.time_base)
+            valid = False
+            if every:
+                if i % (every or 1) == 0:
+                    valid = True
+            elif interval:  # noqa: SIM102
+                if timestamp >= next_time:
+                    valid = True
+                    next_time += interval
+            if valid:
+                image = frame.to_image()
+                image.save(f"{out}_{i:08d}.png.tmp", format="PNG")
+                os.replace(f"{out}_{i:08d}.png.tmp", f"{out}_{i:08d}.png")
+
+def _video2image_commande(input: list[str], out: str, every: float | None = None, interval: float|None = None) -> None:
+    files = list(sourceGen(input, recursive=True, exclude_dirs=None, types=type_video))
+    pbar = tqdm(
+        total=len(files),
+        dynamic_ncols=True
+    )
+    with Multicore(func=video2image_worker, worker_kwargs={"every": every, "interval": interval}, timeout=10, _dev=True) as core:
+        for source in files:
+            core.put(input=source, out=os.path.join(out, source.name))
+            for _ in core.get():
+                pbar.update()
+
+def video2image_commande(args: argparse.Namespace) -> None:
+    os.makedirs(args.output, exist_ok=True)
+    return _video2image_commande(
+        input=args.input,
+        out=args.output,
+        every=args.every,
+        interval=args.interval
+    )
+
+
 
 def main() -> None:
     if os.name == "nt":
@@ -879,7 +935,7 @@ def main() -> None:
         "--input",
         nargs="+",
         help="Folders of the datasets.",
-        default=None
+        required=True
     )
     duplicates_parser.add_argument(
         "--exclude-dir",
@@ -914,6 +970,16 @@ def main() -> None:
         )
     )
     duplicates_parser.add_argument(
+        "--phash-min-percent",
+        type=float,
+        default=0,
+        help=(
+            "Minimum pHash difference percentage to display. Must be used together "
+            "with --phash-live. Displays every file pair with a pHash difference "
+            "greater than or equal to the specified percentage."
+        )
+    )
+    duplicates_parser.add_argument(
         "--phash-max-percent",
         type=float,
         default=None,
@@ -921,16 +987,6 @@ def main() -> None:
             "Maximum pHash difference percentage to display. Must be used together "
             "with --phash-live. Displays every file pair with a pHash difference "
             "less than or equal to the specified percentage."
-        )
-    )
-    duplicates_parser.add_argument(
-        "--phash-min-percent",
-        type=float,
-        default=None,
-        help=(
-            "Minimum pHash difference percentage to display. Must be used together "
-            "with --phash-live. Displays every file pair with a pHash difference "
-            "greater than or equal to the specified percentage."
         )
     )
     duplicates_parser.add_argument(
@@ -965,7 +1021,7 @@ def main() -> None:
     duplicates_parser.add_argument(
         "--phash-optimizer",
         choices=("default", "numpy", "xor"),
-        default="default",
+        default="xor",
         help=(
             "pHash optimization method: "
             "'default' uses the standard Python implementation of ImageHash. "
@@ -1014,6 +1070,36 @@ def main() -> None:
     cache_clear_parser.set_defaults(
         func=cache_clear_commande
     )
+    # == video2image ==
+    video2image_parser = subparsers.add_parser(
+        "video2image",
+        help="",
+        allow_abbrev=False
+    )
+    video2image_parser.add_argument(
+        "--input",
+        nargs="+",
+        help="Folders of the videos.",
+        required=True
+    )
+    video2image_parser.add_argument(
+        "--output",
+        help="Foler ouput.",
+        required=True
+    )
+    group = video2image_parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--every",
+        type=float
+    )
+    group.add_argument(
+        "--interval",
+        type=float
+    )
+    video2image_parser.set_defaults(
+        func=video2image_commande
+    )
+    # ===
     args = parser.parse_args()
     
     if (not args.allow_unsupported_kernel ) and os.name != "posix":

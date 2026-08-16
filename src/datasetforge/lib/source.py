@@ -13,8 +13,8 @@ experimental_type: list[str] = [
 ]
 
 type_video: list[str] = [
-    "mp4",
-    "mkv"
+    "*.mp4",
+    "*.mkv"
 ]
 
 in_type.extend(experimental_type)
