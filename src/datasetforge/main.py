@@ -293,10 +293,11 @@ def _duplicates_command(
     phash_max_percent: float | None,
     phash_min_percent: float | None,
     phash_bits: int,
+    no_trash: bool,
     no_recursive: bool,
     allow_rm: bool,
     rm_allowed_dirs: list[str] | list[Path] | None,
-    threads: int = os.cpu_count() or 1,
+    threads: int = os.cpu_count() or 1
 ) -> None:
     _dev_permit_rm: bool = True
     start_time_task = None
@@ -470,7 +471,10 @@ def _duplicates_command(
                                         
                                         if _dev_permit_rm:
                                             try:
-                                                send2trash(rm_file)
+                                                if no_trash:
+                                                    os.remove(rm_file)
+                                                else:
+                                                    send2trash(rm_file)
                                             except FileNotFoundError:
                                                 if not phash_low_log:
                                                     phash_live_trace.append(f"FileNotFoundError : {rm_file}")
@@ -726,7 +730,8 @@ def duplicates_command(args: argparse.Namespace) -> None:
         no_recursive=args.no_recursive,
         threads=args.threads,
         allow_rm=args.allow_rm,
-        rm_allowed_dirs=args.rm_allowed_dirs
+        rm_allowed_dirs=args.rm_allowed_dirs,
+        no_trash=args.no_trash
     )
 
 def _cache_info_commande(system_cache: bool) -> None:
@@ -780,12 +785,16 @@ def video2image_seek(
 
 def video2image_worker(input: str, out: str, every: int|None = None, interval: float|None = None) -> None:
     next_time = 0.0
+    done_formats: list[str] = ["datasetforge.done", "done"]
+    done_format = "done"
     with av.open(input) as source:
         stream = source.streams.video[0]
+        #width = max(6, len(str(max(stream.frames, 0))))
         for i, frame in enumerate(source.decode(video=0)):
             #print(str(frame.time) + "\n")
                                                     # pyrefly: ignore [unsupported-operation]
             timestamp = frame.time or float(frame.pts * stream.time_base)
+            
             valid = False
             if every:
                 if i % (every or 1) == 0:
@@ -795,9 +804,18 @@ def video2image_worker(input: str, out: str, every: int|None = None, interval: f
                     valid = True
                     next_time += interval
             if valid:
-                image = frame.to_image()
-                image.save(f"{out}_{i:08d}.png.tmp", format="PNG")
-                os.replace(f"{out}_{i:08d}.png.tmp", f"{out}_{i:08d}.png")
+                file_out = f"{out}_{i}.png"
+                for type_ in done_formats:
+                    if os.path.isfile(f"{file_out}.{type_}"):
+                        valid = False
+                        continue
+                
+                if valid:
+                    image = frame.to_image()
+                    image.save(f"{file_out}.tmp", format="PNG")
+                    os.replace(f"{file_out}.tmp", f"{out}_{i}.png")
+                    with open(f"{out}_{i}.png.{done_format}", "wb") as f:
+                        f.write((1).to_bytes())
 
 def _video2image_commande(input: list[str], out: str, every: float | None = None, interval: float|None = None) -> None:
     files = list(sourceGen(input, recursive=True, exclude_dirs=None, types=type_video))
@@ -823,6 +841,7 @@ def video2image_commande(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    #stats
     if os.name == "nt":
         warnings.warn(
             "The current kernel is not officially supported. "
@@ -1019,6 +1038,11 @@ def main() -> None:
         help=""
     )
     duplicates_parser.add_argument(
+        "--no-trash",
+        action="store_true",
+        help=""
+    )
+    duplicates_parser.add_argument(
         "--phash-optimizer",
         choices=("default", "numpy", "xor"),
         default="xor",
@@ -1120,7 +1144,10 @@ def main() -> None:
             daemon=True
         ).start()
     
-    args.func(args)
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        sys.exit(0)
 
 
 if __name__ == "__main__":
