@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import av
+import cv2
 import humanize
 import imagehash
 import numpy
@@ -839,6 +840,62 @@ def video2image_commande(args: argparse.Namespace) -> None:
     )
 
 
+def sharpness_worker_unit(file: str, i: int, use_resize_pixel_area: bool = False) -> tuple[float, str]:
+    image = cv2.imread(file, cv2.IMREAD_GRAYSCALE)
+    
+    if use_resize_pixel_area:
+        image = resize_pixel_area(image, resolution=512, exceptR=True)
+    
+    # pyrefly: ignore [no-matching-overload]
+    laplacian = cv2.Laplacian(image, cv2.CV_64F)
+    return (laplacian.var(), file)
+"""
+def sharpness_worker(file: str) -> list:
+    top = []
+    while True:
+        item = (sharpness_worker_unit(file), file, image.shape[:2])
+        
+        if len(top) < k:
+            heapq.heappush(top, item)
+        elif score > top[0][0]:
+            heapq.heapreplace(top, item)
+"""
+
+def _sharpness_commande(input: str, k: int, threads: int) -> None:
+    top = []
+    
+    files: list[Path] = list(sourceGen(input, recursive=True, exclude_dirs=None))
+    pbar = tqdm(
+        total=len(files),
+        dynamic_ncols=True,
+        mininterval=1
+    )
+    
+    with Multicore(func=sharpness_worker_unit, timeout=5, core=threads, _dev=True) as core:
+        for i, file in enumerate(files):
+            core.put(file=file, i=i)
+            
+            for _ in core.get(block=False):
+                pbar.update()
+                item: tuple[float, str] = _
+                if len(top) < k:
+                    heapq.heappush(top, item)
+                elif _[0] > top[0][0]:
+                    heapq.heapreplace(top, item)
+        
+        top.sort(reverse=False)
+        
+        for score, file in top:
+            print(score, os.path.abspath(file))
+
+def sharpness_commande(args: argparse.Namespace) -> None:
+    return _sharpness_commande(
+        input=args.input,
+        k=args.top_k,
+        threads=args.threads
+    )
+
+
 
 def main() -> None:
     #stats
@@ -1122,6 +1179,26 @@ def main() -> None:
     )
     video2image_parser.set_defaults(
         func=video2image_commande
+    )
+    # == sharpness ==
+    sharpness_parser = subparsers.add_parser(
+        "sharpness",
+        help="",
+        allow_abbrev=False
+    )
+    sharpness_parser.add_argument(
+        "--input",
+        type=str,
+        required=True
+    )
+    sharpness_parser.add_argument(
+        "--top-k",
+        type=int,
+        help="Return the K results.",
+        required=True
+    )
+    sharpness_parser.set_defaults(
+        func=sharpness_commande
     )
     # ===
     args = parser.parse_args()
