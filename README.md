@@ -92,7 +92,7 @@ Specifies one or more dataset directories. Indexes are generated automatically, 
 | --phash-optimizer xor | Speed **x23.5** |
 ---
 
-I strongly recommend using `--phash-local-xor` for significantly better performance. It calculates the Hamming distance directly using a bitwise XOR operation, making it especially efficient on 64-bit processors. It is not enabled by default because I cannot guarantee that this implementation will always produce exactly the same behavior as the original distance operation.
+I strongly recommend using `--phash-local-xor` for significantly better performance. It calculates the Hamming distance directly using a bitwise XOR operation, making it especially efficient on 64-bit processors. Enabled by default for maximum performance; disable if unstable.
 
 `--phash-local-numpy` uses NumPy to compare the individual hash elements instead. While it provides lower performance than the XOR implementation, it more closely follows the original element-wise distance calculation and is therefore the safer choice when exact compatibility is preferred.
 
